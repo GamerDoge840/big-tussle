@@ -6,7 +6,7 @@
 <title>Battle Sim</title>
 </head>
 <body>
-<!-- portable standalone build of the battle sim, generated 2026-11-18 from the editor index.html — self-contained, no engine needed -->
+<!-- portable standalone build of the battle sim, generated 2026-11-19 from the editor index.html — self-contained, no engine needed -->
 <style>
   /* Dark-styled UI (bars/dock are near-black pills), so declare it: browsers
      with auto-dark / night-mode content features then leave our pixels alone
@@ -175,7 +175,7 @@ function fcol(f) { return mode === "ffa" ? FFA_GRAY : (FACTIONS[f] || "#fff"); }
 let cv = null, ctx = null;
 let ov = null, octx = null, ghostQueued = false; // placement-ghost overlay
 function sizeOverlay() {
-  if (!ov) { ov = document.getElementById("ov"); if (ov) octx = ov.getContext("2d", { willReadFrequently: true }); }
+  if (!ov) { ov = document.getElementById("ov"); if (ov) octx = ov.getContext("2d"); }
   if (ov && cv) { ov.width = cv.width; ov.height = cv.height; }
 }
 // redraw the ghost soon (coalesced to one per frame): pointer input stays
@@ -207,11 +207,17 @@ function zoomAt(sx, sy, f) {
 }
 const ptrs = new Map(); // live pointers (screen px) for two-finger pan/zoom
 let pinch = null;       // {mx,my,d} last two-finger midpoint + spacing, while pinching
+let strokeNew = null;   // placements made by the current paint stroke (for pinch-undo below)
+let strokeMoved = false, strokeSX = 0, strokeSY = 0; // stroke start (screen px): a stroke that never moves can be taken back
 let panDrag = null;     // {lx,ly} active button-drag pan (middle, or right once it moves)
-let rDown = null;       // deferred right-click erase {x,y} in world coords (fires on tap-up)
+let rDown = null;       // right-button anchor {x,y} in world coords: a drag becomes a pan (a tap does nothing)
 function attachInput() {
   if (cv.__bound) return; cv.__bound = true;
   cv.addEventListener("contextmenu", e => e.preventDefault());
+  // the bar/dock/panels are HTML above the canvas: right-clicking them
+  // would pop the native menu mid-game, so suppress it app-wide (the game
+  // has no text fields that need it)
+  if (!window.__ctxBound) { window.__ctxBound = true; document.addEventListener("contextmenu", e => e.preventDefault()); }
   // middle-click would autoscroll — we pan with it instead
   cv.addEventListener("mousedown", e => { if (e.button === 1) e.preventDefault(); });
   cv.addEventListener("pointerdown", e => {
@@ -222,6 +228,18 @@ function attachInput() {
     ptrs.set(e.pointerId, { x: p.x, y: p.y });
     if (ptrs.size === 2) { // second finger lands: pan/zoom, never paint/erase
       painting = false; erasing = false; panDrag = null; rDown = null;
+      // a pinch that starts before the first finger even moves takes back
+      // the tap it interrupted — otherwise every pinch-zoom drops a stray
+      // unit (or spawner/tree/wall) under the first finger. A stroke that
+      // already dragged keeps everything it laid down.
+      if (strokeNew && !strokeMoved) {
+        for (const rec of strokeNew) {
+          const i = rec.arr.indexOf(rec.o);
+          if (i >= 0) rec.arr.splice(i, 1);
+        }
+        if (strokeNew.length) refreshBar();
+      }
+      strokeNew = null;
       const q = [...ptrs.values()];
       pinch = { mx: (q[0].x + q[1].x) / 2, my: (q[0].y + q[1].y) / 2,
                 d: Math.hypot(q[0].x - q[1].x, q[0].y - q[1].y) };
@@ -232,32 +250,30 @@ function attachInput() {
       panDrag = { lx: p.x, ly: p.y };
       cv.style.cursor = "grabbing";
       e.preventDefault();
-    } else if (e.button === 2) { // right-drag pans; a right TAP still erases
-      // right-click always drops the current selection first (selected
-      // spawner or barricade + its panel; the pre-placement window returns
-      // if mode is on)
-      if (selSp) { selSp = null; hideSpanel(); if (brush.spawner) showSppre(); }
-      if (selBarr) selBarr = null;
+    } else if (e.button === 2) { // right-drag pans; a right TAP is a no-op
+      // (deliberately: right-click never erases and never drops the brush
+      // or a selection — Esc cancels those. An earlier revision erased on
+      // tap-up here, which read as the app randomly entering eraser mode.)
       rDown = { x: w.x, y: w.y, sx: p.x, sy: p.y };
     }
-    else if (brush.eraser) { erasing = true; eraseAt(w.x, w.y); }
+    else if (brush.eraser) { erasing = true; eraseAt(w.x, w.y); strokeNew = null; }
     else if (brush.spawner) {
       // spawner mode: tapping an existing spawner selects it for tweaking,
       // tapping empty ground places a new one (dragging places a trail).
       // Placing never touches the setup window — it stays open so more
       // spawners can follow with the same settings.
       const hit = spawnerAt(w.x, w.y);
-      if (hit) { selectSpawner(hit); painting = false; }
-      else { const sp = placeSpawner(w.x, w.y); if (!sp) poof(w.x, w.y, "#999999", 4); painting = true; }
+      if (hit) { selectSpawner(hit); painting = false; strokeNew = null; }
+      else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; const sp = placeSpawner(w.x, w.y); if (sp && strokeNew) strokeNew.push({ arr: spawners, o: sp }); if (!sp) poof(w.x, w.y, "#999999", 4); painting = true; }
     }
     else if (brush.tab === "objects") {
       // objects mode: tapping a placed barricade selects it (scroll rotates it),
       // tapping empty ground plants the picked object (dragging lays a trail)
     const hitB = barricadeAt(w.x, w.y);
-    if (hitB) { selectBarrPicked(hitB); painting = false; queueGhost(); }
-      else { painting = true; paintAt(w.x, w.y); }
+    if (hitB) { selectBarrPicked(hitB); painting = false; strokeNew = null; queueGhost(); }
+      else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; paintAt(w.x, w.y); }
     }
-    else { painting = true; paintAt(w.x, w.y); }
+    else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; paintAt(w.x, w.y); }
     mouse.x = p.x; mouse.y = p.y; mouse.down = true;
     queueGhost();
     try { cv.setPointerCapture(e.pointerId); } catch (_) {}
@@ -265,10 +281,11 @@ function attachInput() {
   const endPointer = e => {
     ptrs.delete(e.pointerId);
     if (ptrs.size < 2) pinch = null;
+    strokeNew = null; // stroke over (anything it placed is committed)
     if (e.button === 1 && panDrag) { panDrag = null; cv.style.cursor = ""; }
     if (e.button === 2) {
-      if (rDown) { eraseAt(rDown.x, rDown.y); rDown = null; } // tap: erase
-      else if (panDrag) { panDrag = null; cv.style.cursor = ""; } // drag: end pan
+      rDown = null; // tap: nothing (erasing lives on the eraser tool, not here)
+      if (panDrag) { panDrag = null; cv.style.cursor = ""; } // drag: end pan
     }
   };
   cv.addEventListener("pointerup", endPointer);
@@ -292,7 +309,7 @@ function attachInput() {
       if (dx || dy) { cam.x -= dx / zoom; cam.y -= dy / zoom; clampCam(); panDrag.lx = p.x; panDrag.ly = p.y; queueGhost(); }
       return;
     }
-    if (rDown) { // right held: a drag becomes a pan, a tap stays an erase
+    if (rDown) { // right held: a drag becomes a pan, a tap does nothing
       if (Math.hypot(p.x - rDown.sx, p.y - rDown.sy) > 6) {
         panDrag = { lx: p.x, ly: p.y };
         cv.style.cursor = "grabbing";
@@ -301,6 +318,7 @@ function attachInput() {
       return;
     }
     const w = toWorld(p);
+    if (painting && Math.hypot(p.x - strokeSX, p.y - strokeSY) > 6) strokeMoved = true; // dragged: a later pinch keeps this stroke's placements
     if (painting) paintAt(w.x, w.y);
     else if (erasing) eraseAt(w.x, w.y);
     queueGhost();
@@ -346,7 +364,7 @@ function attachInput() {
     // top bar / dock (or after capture was lost) never reaches it — without
     // this, panDrag survives and mere mouse motion pans the view (and a
     // stuck paint trail keeps spawning units).
-    addEventListener("pointerup", () => { painting = false; erasing = false; mouse.down = false; panDrag = null; rDown = null; cv.style.cursor = ""; queueGhost(); });
+    addEventListener("pointerup", () => { painting = false; erasing = false; mouse.down = false; panDrag = null; rDown = null; strokeNew = null; cv.style.cursor = ""; queueGhost(); });
     // focus lost mid-drag (Alt-Tab with a button held): drop all transient
     // input so the return doesn't pan/paint from stale state. Keys have
     // their own blur reset next to the camera-key binding below.
@@ -357,8 +375,8 @@ function attachInput() {
 // draw into (and listen on) the live element.
 function bindCanvas() {
   const live = document.getElementById("cv");
-  if (live && live !== cv) { cv = live; ctx = cv.getContext("2d", { willReadFrequently: true }); resize(); }
-  else if (!cv) { cv = live; ctx = cv.getContext("2d", { willReadFrequently: true }); }
+  if (live && live !== cv) { cv = live; ctx = cv.getContext("2d"); resize(); }
+  else if (!cv) { cv = live; ctx = cv.getContext("2d"); }
   if (cv) attachInput();
 }
 
@@ -368,6 +386,7 @@ let holeCv = null, holeCtx = null;
 let shotsFired = 0, fleshHits = 0; // lifetime diagnostic counters for probes and AI tuning (reset on reload)
 let uid = 1;
 let brush = { unit:"soldier", tab:"soldiers", faction:"red", eraser:false, spawner:false }; // spawner: placement mode that drops a unit-spawner (kind/faction captured from the selection); never offered for trees
+let lastSoldierUnit = "soldier"; // soldiers-tab pick remembered across trips to Objects (so placing a wall never resets sniper -> soldier)
 let trees = []; // static objects: trees {x,y,r,seed,chip,scars[]} and concrete barricades {kind:"barr",x,y,dir} — bullets chip bark / chip concrete, nothing ever falls
 const TREE_R = 45, TRUNK_R = 14, MAX_TREES = 400;
 const BARR_HALF = 24, BARR_HW = 8; // barricade: a 48-long, 16-thick concrete jersey wall, rotatable in 8 directions
@@ -382,8 +401,8 @@ let spTabBtn = null; // bottom-attached spawner tab
 let mode = "teams";           // "teams" | "ffa"
 let playing = false, speed = 1;
 let retreatSlide = true; // the retreat-blocked wall/edge slide below (false = A/B baseline)
-const SPEEDS = [0.5, 1, 2, 4]; // back/forward arrows step through these
-let speedIdx = 1;
+const SPEEDS = [0.25, 0.5, 1, 2, 4]; // back/forward arrows step through these
+let speedIdx = 2;
 let simT = 0; // game-time clock (s): advances inside step(), so pause/speed scale it
 let winner = null;            // faction key or unit id in ffa
 let everMulti = false, totalKills = 0; // teams crown needs a real battle: 2+ factions together AND blood spilled
@@ -394,7 +413,7 @@ let mouse = { x:-999, y:-999, down:false };
 let bgCv = null, W = 0, H = 0, DPR = 1;
 let FW = 0, FH = 0;       // world (field) size: a bit larger than the viewport
 let cam = { x: 0, y: 0 }; // camera: top-left of the viewport in world coords
-const WORLD_SCALE = 1.5;  // world = viewport x 1.5 on first layout ("a bit larger")
+const WORLD_SCALE = 1.875; // world = viewport x 1.875 on first layout (25% more room than the old 1.5x)
 const PAN_SPEED = 650;    // WASD/drag pan speed, px/s
 const ZOOM_MAX = 2;       // zooming in stops here (no pixel-peeping the sprites)
 let zoom = 1;             // camera zoom: 1 = normal; smaller = zoomed out
@@ -433,13 +452,13 @@ function buildBar() {
   for (const [key, label] of [["soldiers", "Soldiers"], ["objects", "Objects"]]) {
     const tb = document.createElement("button");
     tb.className = "tab"; tb.textContent = label;
-    tb.addEventListener("click", e => { e.stopPropagation(); brush.tab = key; brush.eraser = false; selBarr = null; brush.unit = key === "objects" ? "tree" : "soldier"; if (key === "objects") { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } refreshBar(); tb.blur(); });
+    tb.addEventListener("click", e => { e.stopPropagation(); brush.tab = key; brush.eraser = false; selBarr = null; if (key === "objects") { if (UNIT_DEFS[brush.unit]) lastSoldierUnit = brush.unit; brush.unit = "tree"; } else brush.unit = lastSoldierUnit; if (key === "objects") { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } refreshBar(); tb.blur(); });
     btabBtns[key] = tb; tabs.appendChild(tb);
   }
   bbar.appendChild(tabs);
   btabSold = document.createElement("span"); btabSold.className = "bgroup";
   for (const k of Object.keys(UNIT_DEFS)) {
-    const b = btn(`<span class="uname">${k}</span>`, k, () => { brush.unit = k; brush.tab = "soldiers"; brush.eraser = false; });
+    const b = btn(`<span class="uname">${k}</span>`, k, () => { brush.unit = k; lastSoldierUnit = k; brush.tab = "soldiers"; brush.eraser = false; });
     b.dataset.u = k; unitBtns[k] = b; btabSold.appendChild(b);
   }
   bbar.appendChild(btabSold);
@@ -493,8 +512,8 @@ function buildBar() {
   bar.appendChild(btn(`<span style="font-weight:800;font-size:15px;">+</span>`, "zoom in", () => zoomAt(W / 2, H / 2, 1.3)));
   playBtn = btn(ICONS.pause, "pause / resume", () => togglePlay());
   bar.appendChild(playBtn);
-  bar.appendChild(btn(ICONS.restart, "restart", () => restart()));
-  bar.appendChild(btn(ICONS.trash, "clear (R)", () => trashReset()));
+  bar.appendChild(btn(ICONS.restart, "restart (clears units, terrain, everything)", () => restart()));
+  bar.appendChild(btn(ICONS.trash, "clear units + spawners, keep terrain (R)", () => trashReset()));
   bar.appendChild(sep());
   for (const f of FACTION_KEYS) {
     const c = document.createElement("div");
@@ -610,7 +629,7 @@ if (window.ResizeObserver) {
 function renderBackground() {
   bgCv = document.createElement("canvas");
   bgCv.width = Math.max(1, Math.floor(FW * DPR)); bgCv.height = Math.max(1, Math.floor(FH * DPR));
-  const b = bgCv.getContext("2d", { willReadFrequently: true });
+  const b = bgCv.getContext("2d");
   b.setTransform(DPR, 0, 0, DPR, 0, 0);
   b.fillStyle = "#63944c"; b.fillRect(0, 0, FW, FH);
   const n = Math.floor(FW * FH / 380);
@@ -669,7 +688,7 @@ function resetHoleLayer() {
   if (!holeCv || holeCv.width !== w || holeCv.height !== h) {
     holeCv = document.createElement("canvas");
     holeCv.width = w; holeCv.height = h;
-    holeCtx = holeCv.getContext("2d", { willReadFrequently: true });
+    holeCtx = holeCv.getContext("2d");
   }
   holeCtx.setTransform(1, 0, 0, 1, 0, 0);
   holeCtx.clearRect(0, 0, holeCv.width, holeCv.height);
@@ -797,7 +816,7 @@ function groundLayers() {
     }
     if (!farCv || farCv.width !== w || farCv.height !== h) {
       farCv = document.createElement("canvas"); farCv.width = w; farCv.height = h;
-      farCtx = farCv.getContext("2d", { willReadFrequently: true });
+      farCtx = farCv.getContext("2d");
     }
     farCtx.setTransform(1, 0, 0, 1, 0, 0);
     farCtx.clearRect(0, 0, w, h);
@@ -854,6 +873,10 @@ function spawn(kind, faction, x, y) {
     cover: Math.random() < (kind === "sniper" ? 1.0 : 0.95), coverSide: Math.random() < 0.5 ? -1 : 1, coverTree: null, coverHold: false, // snipers always work cover when any stands
     spdMul: 0.9 + Math.random() * 0.2, // individual pace: no two soldiers march alike
     sp: 0, // spawner id that summoned this unit (0 = hand-placed)
+// perf-cache fields (pre-initialized so every unit shares one hidden class;
+// the step code only ever assigns these, never adds new shapes mid-battle)
+    _e40: false, allyBlock: false, _advX: 0, _advY: 0, _advT: null, _advDone: false,
+    _fsx: 0, _fsy: 0, _ffx: 0, _ffy: 0, _fanx: 0, _fany: 0, _fanc: 0,
   };
   units.push(u); return u;
 }
@@ -901,7 +924,15 @@ function eraseAt(x, y) {
       if (bdx * bdx + bdy * bdy < 75 * 75) concBits.splice(i, 1);
     }
   }
-  else if (best >= 0) { poof(units[best].x, units[best].y, "#ffffff", 8); units.splice(best, 1); refreshBar(); }
+  else if (best >= 0) {
+    const gone = units[best];
+    poof(gone.x, gone.y, "#ffffff", 8); units.splice(best, 1);
+    // attackers locked onto the erased unit would otherwise chase its ghost
+    // forever (full hp, so the sticky check keeps it whenever nothing closer
+    // scores better) — cut them loose so they re-acquire immediately.
+    for (const u of units) if (u.tx === gone) u.tx = null;
+    refreshBar();
+  }
 }
 // ---------- spawners ----------
 const SP_R = 18; // spawner ring radius (visual + click target)
@@ -1337,6 +1368,9 @@ function chipTree(t, x, y, b) {
 // Occupancy (≤3 allies per tree) is tracked in a per-tick map instead of a
 // per-candidate full-unit scan (was trees×units per caller per tick).
 let coverOcc = new Map();
+let treeSet = new Set();
+let tgtCount = new Map();
+let stepTick = 0; // per-step counter (throttles/staggers periodic scans)
 function coverJoin(u, t) { // assign u.coverTree = t, keeping occupancy exact
   if (u.coverTree === t) return;
   coverLeave(u);
@@ -1362,7 +1396,7 @@ function seekCover(u, dx, dy, d, retreat) {
   // stick with the assigned trunk while it's still standing and credible,
   // instead of re-rolling a new tree every tick
   const cur = u.coverTree;
-  if (cur && trees.includes(cur)) {
+  if (cur && treeSet.has(cur)) {
     const rx = cur.x - u.x, ry = cur.y - u.y;
     const duCur = Math.sqrt(rx * rx + ry * ry);
     const aCur = rx * ex + ry * ey;
@@ -1673,8 +1707,8 @@ let lastBarrPlant = null; // drag-chaining anchor: successful plants link into l
 function paintAt(x, y) {
   const now = performance.now();
   if (now - lastPaint < 30) return; lastPaint = now;
-  if (brush.spawner) { placeSpawner(x, y); return; } // drag trail places silently; tapping selects (see pointerdown)
-  if (brush.unit === "tree") { plantTree(x, y); return; }
+  if (brush.spawner) { const ps0 = placeSpawner(x, y); if (ps0 && strokeNew) strokeNew.push({ arr: spawners, o: ps0 }); return; } // drag trail places silently; tapping selects (see pointerdown)
+  if (brush.unit === "tree") { const pt0 = plantTree(x, y); if (pt0 && strokeNew) strokeNew.push({ arr: trees, o: pt0 }); return; }
   // a fresh placement drops the old selection, so the wheel follows the
   // placement ghost again instead of spinning a wall behind your back
   if (brush.unit === "barricade") {
@@ -1688,11 +1722,11 @@ function paintAt(x, y) {
       const ox = lastBarrPlant.x, oy = lastBarrPlant.y; // anchor stays put for the whole stroke segment
       for (let dd = 40; dd < fd; dd += 40) {
         const t = plantBarr(ox + fdx * dd / fd, oy + fdy * dd / fd);
-        if (t) lastBarrPlant = { x: t.x, y: t.y };
+        if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (strokeNew) strokeNew.push({ arr: trees, o: t }); }
       }
     }
     const t = plantBarr(x, y);
-    if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (selBarr) selectBarr(null); }
+    if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (selBarr) selectBarr(null); if (strokeNew) strokeNew.push({ arr: trees, o: t }); }
     return;
   }
   const def = UNIT_DEFS[brush.unit];
@@ -1710,7 +1744,11 @@ function paintAt(x, y) {
     if (segDist(x, y, s[0], s[1], s[2], s[3]) < BARR_HW + def.radius) { ok = false; break; }
   }
   if (ok) for (const s of spawners) { const dx = s.x-x, dy = s.y-y; if (dx*dx+dy*dy < 32*32) { ok = false; break; } }
-  if (ok) { spawn(brush.unit, brush.faction, x + (Math.random()*6-3), y + (Math.random()*6-3)); refreshBar(); }
+  // silent failures here read as "placed units vanished": a blocked spot or a
+  // full field (MAX_UNITS) gets the same gray puff a failed spawner does.
+  if (!ok) { poof(x, y, "#999999", 4); return; }
+  const nu = spawn(brush.unit, brush.faction, x + (Math.random()*6-3), y + (Math.random()*6-3));
+  if (!nu) poof(x, y, "#999999", 4); else { if (strokeNew) strokeNew.push({ arr: units, o: nu }); refreshBar(); }
 }
 
 // ---------- combat ----------
@@ -1765,18 +1803,20 @@ function acquire(u) {
   }
   // focus-fire cap (teams only): if 2+ allies already work `best` over,
   // take `second` when it's close so the line pairs off into duels instead
-  // of stacking a whole squad onto one victim
+  // of stacking a whole squad onto one victim. Counts come from the
+  // per-step target map (rebuilt each tick, kept exact as acquire reassigns)
+  // instead of a full ally scan per acquire.
   if (best && second && mode === "teams" && ss < bs * 2.0) {
-    let n = 0;
-    for (const a of units) {
-      if (a === u || a.hp <= 0 || a.faction !== u.faction) continue;
-      if (a.tx === best && ++n >= 2) break;
-    }
-    if (n >= 2) best = second;
+    const e = tgtCount.get(best);
+    if (((e && e[u.faction]) || 0) - (u.tx === best ? 1 : 0) >= 2) best = second;
   }
   // reaction delay on a fresh target so kills don't snap instantly
   if (best && best !== u.tx) u.cool = Math.max(u.cool, 0.22 + Math.random() * 0.3);
-  u.tx = best;
+  if (u.tx !== best) {
+    if (u.tx) { const eo = tgtCount.get(u.tx); if (eo && eo[u.faction]) eo[u.faction]--; }
+    if (best) { let en = tgtCount.get(best); if (!en) { en = {}; tgtCount.set(best, en); } en[u.faction] = (en[u.faction] || 0) + 1; }
+    u.tx = best;
+  }
   if (u.tx) { const dx = u.tx.x - u.x, dy = u.tx.y - u.y; u.td = Math.sqrt(dx * dx + dy * dy); }
   else u.td = Infinity;
 }
@@ -1877,7 +1917,11 @@ function hitSpark(x, y) {
 
 function step(dt) {
   simT += dt; // game-time clock: pause freezes it, speed scales it with healing
-  // staggered retargets keep 400 units cheap
+  // spatial hash + per-tick snapshots, all in one pass: the grid feeds
+  // separation/formation/lane/bullet queries, coverOcc feeds the ≤3-allies
+  // (≤5 wall) caps, tgtCount feeds the focus-fire duel-pairing cap.
+  // (same-tick joins/leaves keep both maps exact; acquire maintains
+  // tgtCount as it reassigns, coverJoin/coverLeave maintain coverOcc)
   const grid = new Map(), GS = 48;
   const gk = (x, y) => { const cx = (((x / GS) | 0) + 128), cy = (((y / GS) | 0) + 128); return cx * 2048 + cy; };
   const gk3 = (ix, iy) => ((ix + 128) * 2048 + (iy + 128));
@@ -1885,14 +1929,26 @@ function step(dt) {
     if (u.hp <= 0 || !isFinite(u.x + u.y)) continue;
     const k = gk(u.x, u.y);
     let a = grid.get(k); if (!a) { a = []; grid.set(k, a); } a.push(u);
+    // same-tick occupancy + target counts (joins/leaves during the tick keep
+    // both maps exact; acquire maintains tgtCount as it reassigns below)
+    if (u.coverTree && treeSet.has(u.coverTree)) {
+      let e = coverOcc.get(u.coverTree); if (!e) { e = {}; coverOcc.set(u.coverTree, e); }
+      e[u.faction] = (e[u.faction] || 0) + 1;
+    }
+    if (u.tx && u.tx.hp > 0) {
+      let e = tgtCount.get(u.tx); if (!e) { e = {}; tgtCount.set(u.tx, e); }
+      e[u.faction] = (e[u.faction] || 0) + 1;
+    }
   }
-  // cover occupancy snapshot (same-tick joins/leaves keep it exact)
+  stepTick++;
+  treeSet = new Set(trees);
   coverOcc = new Map();
-  for (const cu of units) {
-    if (cu.hp <= 0 || !cu.coverTree || !trees.includes(cu.coverTree)) continue;
-    let e = coverOcc.get(cu.coverTree); if (!e) { e = {}; coverOcc.set(cu.coverTree, e); }
-    e[cu.faction] = (e[cu.faction] || 0) + 1;
-  }
+  tgtCount = new Map();
+  // big battles stretch the retarget interval (up to 2.5x at 375+ units):
+  // the sticky check + kill-triggered instant reacquire keep targeting
+  // responsive while the periodic O(n) rescan thins out
+  const retScale = Math.min(2.5, 1 + units.length / 250) * (lodSimple ? 2 : 1);
+  // cover occupancy + focus-fire counts were snapshotted in the grid pass above
   for (const u of units) {
     if (u.hp <= 0) continue;
     const def = UNIT_DEFS[u.kind];
@@ -1961,12 +2017,12 @@ function step(dt) {
     // scan that comes up empty backs off to ~1s instead of rescanning
     // every step, so wiped/peaceful fields don't burn O(n^2) doing
     // nothing. Fresh spawns still lock on immediately (their own small
-    // initial retarget).
+    // initial retarget); big battles stretch the interval (see retScale).
     if (u.tx && u.tx.hp > 0) {
-      if (u.retarget <= 0) { acquire(u); u.retarget = (0.15 + Math.random() * 0.15) * (lodSimple ? 2 : 1); }
+      if (u.retarget <= 0) { acquire(u); u.retarget = (0.15 + Math.random() * 0.15) * retScale; }
     } else if (u.retarget <= 0 || (u.tx && u.tx.hp <= 0)) {
       acquire(u);
-      u.retarget = u.tx ? (0.15 + Math.random() * 0.15) * (lodSimple ? 2 : 1) : 0.6 + Math.random() * 0.6;
+      u.retarget = u.tx ? (0.15 + Math.random() * 0.15) * retScale : 0.6 + Math.random() * 0.6;
     }
     let mvx = 0, mvy = 0;
     u.moving = false;
@@ -2032,7 +2088,7 @@ function step(dt) {
       // itself says in-cover) holds the spot instead of marching off it —
       // rushed (d<=100), hurt, pressured or rolling, which all break camp.
       let planted = false;
-      if (u.kind === "sniper" && !wounded && u.rollT <= 0 && !pressured && d > 100 && u.coverTree && trees.includes(u.coverTree)) {
+      if (u.kind === "sniper" && !wounded && u.rollT <= 0 && !pressured && d > 100 && u.coverTree && treeSet.has(u.coverTree)) {
         const sc0 = seekCover(u, dx, dy, d, true);
         planted = !!(sc0 && sc0.inCover);
       }
@@ -2134,12 +2190,19 @@ function step(dt) {
         mvx = dx / d + oxp * weave * wAmp * u.strafeDir;
         mvy = dy / d + oyp * weave * wAmp * u.strafeDir;
         // bounding overwatch: drift toward trunks lying roughly on the
-        // advance path, so the push goes tree to tree
+        // advance path, so the push goes tree to tree. Scans every 3rd step
+        // per unit (cached drift in between — the low-passed steering can't
+        // follow faster changes anyway); also box-rejects before the sqrt.
         if (u.cover && trees.length) {
+          if (((u.id + stepTick) % 3) !== 0 && u._advDone) {
+            mvx += u._advX || 0; mvy += u._advY || 0;
+            if (u._advT && treeSet.has(u._advT)) coverJoin(u, u._advT);
+          } else {
           const exa = dx / d, eya = dy / d;
           let bt = null, bs2 = Infinity;
           for (const t of trees) {
             const rx = t.x - u.x, ry = t.y - u.y;
+            if (rx > 300 || rx < -300 || ry > 300 || ry < -300) continue;
             const du = Math.sqrt(rx * rx + ry * ry);
             if (du > 300 || du < 30) continue;
             const along = rx * exa + ry * eya;
@@ -2152,9 +2215,11 @@ function step(dt) {
           if (bt) {
             const bdx = bt.x - u.x, bdy = bt.y - u.y;
             const bl = Math.max(1, Math.sqrt(bdx * bdx + bdy * bdy));
-            mvx += bdx / bl * 0.9; mvy += bdy / bl * 0.9;
+            u._advX = bdx / bl * 0.9; u._advY = bdy / bl * 0.9; u._advT = bt; u._advDone = true;
+            mvx += u._advX; mvy += u._advY;
             coverJoin(u, bt);
-          }
+          } else { u._advX = 0; u._advY = 0; u._advT = null; u._advDone = true; }
+          } // end else (full advance scan)
           // (no rear-wood fetch here: out of range the sniper must close the
           // distance — fetching backward would pin it on its stump while a
           // mirroring enemy does the same, which is the sniper-duel deadlock.)
@@ -2347,24 +2412,15 @@ function step(dt) {
       } else u.advKey = null;
       // friendly-fire hold: if an ally stands in the firing lane, sidestep
       // this tick instead of wasting the shot (no friendly hits in teams).
-      let allyBlock = false;
-      if (mode === "teams" && engaged && d > 40) {
-        const ax = Math.cos(u.aim), ay = Math.sin(u.aim);
-        const qcx = (u.x / GS) | 0, qcy = (u.y / GS) | 0;
-        outerLane: for (let ix = qcx - 1; ix <= qcx + 1; ix++) for (let iy = qcy - 1; iy <= qcy + 1; iy++) {
-          const cell = grid.get(gk3(ix, iy)); if (!cell) continue;
-          for (const o of cell) {
-            if (o === u || o.hp <= 0 || o.faction !== u.faction) continue;
-            const rx = o.x - u.x, ry = o.y - u.y;
-            const along = rx * ax + ry * ay;
-            if (along < 12 || along > d - 8) continue;
-            if (Math.abs(rx * ay - ry * ax) < 13) { allyBlock = true; break outerLane; }
-          }
-        }
-        if (allyBlock) {
-          mvx += oxp * u.strafeDir * 1.2; mvy += oyp * u.strafeDir * 1.2;
-          u.moving = true;
-        }
+      // Detection runs in the formation loop below (same 9 cells, one pass);
+      // the branch reads last step's flag for the crouch/fire gates (one step
+      // of staleness on a heuristic) and applies the same sidestep, while the
+      // formation loop sidesteps fresh detections at once.
+      const allyBlock = !!u.allyBlock;
+      u._e40 = mode === "teams" && engaged && d > 40; // gate for this step's formation scan
+      if (allyBlock) {
+        mvx += oxp * u.strafeDir * 1.2; mvy += oyp * u.strafeDir * 1.2;
+        u.moving = true;
       }
       // blocked firing lane (snipers): a trunk crosses the muzzle→target
       // line — but not the target's own tree while it's tucked behind it:
@@ -2386,6 +2442,10 @@ function step(dt) {
         const lex = leadX - ltx, ley = leadY - lty, ll2 = lex * lex + ley * ley;
         if (ll2 > 1) {
           const lrr = (TRUNK_R + 2) * (TRUNK_R + 2);
+          // lane AABB (muzzle->lead, expanded by the trunk radius): trees
+          // outside it can't touch the lane — same result, fewer projections
+          const lbx0 = Math.min(ltx, leadX) - 16, lbx1 = Math.max(ltx, leadX) + 16;
+          const lby0 = Math.min(lty, leadY) - 16, lby1 = Math.max(lty, leadY) + 16;
           for (const t of trees) {
             // the target's tree is a legitimate target only while it's
             // actively tucked behind it (coverHold): chipping guarding wood
@@ -2394,7 +2454,10 @@ function step(dt) {
             // and sidestep instead of mag-dumping bark at nothing.
             if (t === u.tx.coverTree && u.tx.coverHold) continue;
             if (t.kind === "barr") continue; // concrete never screens a lane by itself (see the bullet loop)
-            const lrx = t.x - ltx, lry = (t.y + 15) - lty;
+            if (t.x < lbx0 || t.x > lbx1) continue;
+            const tby = t.y + 15;
+            if (tby < lby0 || tby > lby1) continue;
+            const lrx = t.x - ltx, lry = tby - lty;
             let ls = (lrx * lex + lry * ley) / ll2;
             ls = ls < 0 ? 0 : (ls > 1 ? 1 : ls);
             const lpx = lrx - lex * ls, lpy = lry - ley * ls;
@@ -2426,7 +2489,7 @@ function step(dt) {
         let wbWt = null;
         if (wl2 > 1) {
           const ct = u.tx.coverTree;
-          if (ct && ct.kind === "barr" && u.tx.coverHold && trees.includes(ct)) {
+          if (ct && ct.kind === "barr" && u.tx.coverHold && treeSet.has(ct)) {
             const ws = barrSeg(ct);
             if (segSegDist(wtx, wty, leadX, leadY, ws[0], ws[1], ws[2], ws[3]) < BARR_HW + 1) { wallBlocked = true; wbWt = ct; }
           }
@@ -2457,13 +2520,18 @@ function step(dt) {
         const tex = leadX - ttx, tey = leadY - tty, tl2 = tex * tex + tey * tey;
         if (tl2 > 1) {
           const trr = (TRUNK_R + 2) * (TRUNK_R + 2);
+          const tbx0 = Math.min(ttx, leadX) - 16, tbx1 = Math.max(ttx, leadX) + 16;
+          const tby0 = Math.min(tty, leadY) - 16, tby1 = Math.max(tty, leadY) + 16;
           for (const t of trees) {
             if (t.kind === "barr") continue; // concrete keeps its own rule above
             if (t === u.tx.coverTree && u.tx.coverHold) continue;
-            const trx = t.x - ttx, tryy = (t.y + 15) - tty;
-            let ts = (trx * tex + tryy * tey) / tl2;
+            if (t.x < tbx0 || t.x > tbx1) continue;
+            const tryy = (t.y + 15);
+            if (tryy < tby0 || tryy > tby1) continue;
+            const trx = t.x - ttx, try2 = tryy - tty;
+            let ts = (trx * tex + try2 * tey) / tl2;
             ts = ts < 0 ? 0 : (ts > 1 ? 1 : ts);
-            const tpx = trx - tex * ts, tpy = tryy - tey * ts;
+            const tpx = trx - tex * ts, tpy = try2 - tey * ts;
             if (tpx * tpx + tpy * tpy < trr) { trunkBlocked = true; break; }
           }
         }
@@ -2570,11 +2638,25 @@ function step(dt) {
     // file-breaker sidestep when an ally stands directly ahead. There is no
     // centroid pull while holding — that pull was what balled everyone up.
     let sx = 0, sy = 0, fx = 0, fy = 0, anx = 0, any = 0, anc = 0;
-    let tax = 0, tay = 0, tlx = 0, tly = 0, hasAxis = false;
+    let tax = 0, tay = 0, tlx = 0, tly = 0, hasAxis = false, e40d = 0;
     if (u.tx && u.tx.hp > 0) {
       const vx = u.tx.x - u.x, vy = u.tx.y - u.y, vl = Math.max(1, Math.sqrt(vx * vx + vy * vy));
-      tax = vx / vl; tay = vy / vl; tlx = -tay; tly = tax; hasAxis = true;
+      tax = vx / vl; tay = vy / vl; tlx = -tay; tly = tax; hasAxis = true; e40d = vl;
     }
+    // friendly-fire lane detection (merged here so engaged units don't walk
+    // the same 9 cells twice): aim axis only, gated by the branch's engaged
+    // flag from this same step. Sets u.allyBlock for next step's branch.
+    // Neighbor scans run every other step per unit (alternating on id+tick):
+    // separation at 30Hz is plenty (3px of travel between updates vs 26px+
+    // radii), and the low-passed steering smooths over the off steps.
+    let allyBlockFresh = false, abAx = 0, abAy = 0;
+    const fFull = (((u.id + stepTick) & 1) === 0);
+    if (u._e40 && hasAxis && fFull) { abAx = Math.cos(u.aim); abAy = Math.sin(u.aim); }
+    if (!fFull) {
+      sx = u._fsx || 0; sy = u._fsy || 0; fx = u._ffx || 0; fy = u._ffy || 0;
+      anx = u._fanx || 0; any = u._fany || 0; anc = u._fanc || 0;
+      allyBlockFresh = !!u.allyBlock;
+    } else {
     const cx = (u.x / GS) | 0, cy = (u.y / GS) | 0;
     for (let ix = cx - 1; ix <= cx + 1; ix++) for (let iy = cy - 1; iy <= cy + 1; iy++) {
       const cell = grid.get(gk3(ix, iy)); if (!cell) continue;
@@ -2599,6 +2681,12 @@ function step(dt) {
             const s = side > 0.5 ? -1 : side < -0.5 ? 1 : u.strafeDir;
             fx += tlx * s * 1.6; fy += tly * s * 1.6;
           }
+          // friendly-fire lane: ally standing in the muzzle lane (aim axis,
+          // not the threat axis) — same test the branch used to run inline
+          if (u._e40 && !allyBlockFresh) {
+            const al = -(dx * abAx + dy * abAy);
+            if (al >= 12 && al <= e40d - 8 && Math.abs(dx * abAy - dy * abAx) < 13) allyBlockFresh = true;
+          }
         } else {
           const min = 30;
           if (d2 > 0.01 && d2 < min*min) { const d = Math.sqrt(d2); sx += dx/d * (1 - d/min); sy += dy/d * (1 - d/min); }
@@ -2606,6 +2694,9 @@ function step(dt) {
         if (allied && d2 < 120*120 && d2 > 0.01) { anx += o.x; any += o.y; anc++; }
       }
     }
+    u._fsx = sx; u._fsy = sy; u._ffx = fx; u._ffy = fy;
+    u._fanx = anx; u._fany = any; u._fanc = anc;
+    } // end else (full neighbor scan)
     mvx += sx * 1.8 + fx; mvy += sy * 1.8 + fy;
     if (anc > 0) {
       const hurt = u.hp < u.maxHp * (u.fleeHp || 0.35);
@@ -2615,6 +2706,8 @@ function step(dt) {
       const coh = hurt ? 0.02 : advancing2 ? 0.006 : 0;
       if (coh > 0) { mvx += (anx / anc - u.x) * coh; mvy += (any / anc - u.y) * coh; }
     }
+    if (allyBlockFresh && hasAxis) { mvx += tlx * u.strafeDir * 1.2; mvy += tly * u.strafeDir * 1.2; }
+    u.allyBlock = allyBlockFresh; // next step's branch reads this for the crouch/fire gates
     // rooted snipers ignore formation shoves too: the pre-branch gate kills
     // their own intent, this one kills the pile-on drift (full immobility)
     if (u.kind === "sniper" && (u.crouch || 0) > 0.5) { mvx = 0; mvy = 0; }
@@ -2632,7 +2725,7 @@ function step(dt) {
       const routing = u.hp < u.maxHp * (u.fleeHp || 0.35);
       // cover-seekers keep today's behavior: crossing to a tuck point is a
       // real crossing (stale assignments — erased wood — don't count)
-      const seeking = u.coverTree && trees.indexOf(u.coverTree) >= 0;
+      const seeking = u.coverTree && treeSet.has(u.coverTree);
       if (tdd <= def.range && tdd >= tMinD && !routing && !seeking) {
         const mll = Math.sqrt(mvx * mvx + mvy * mvy);
         if (mll > 0.3) {
@@ -2713,6 +2806,11 @@ function step(dt) {
     const r = def.radius;
     u.x = Math.max(r, Math.min(FW - r, u.x)); u.y = Math.max(r, Math.min(FH - r, u.y));
     for (const t of trees) { // trunks are solid (the canopy overhangs, the trunk blocks); barricades vault: mid-span crossings hop over, ends deflect
+      // broadphase: a wall's closest approach is within 24 (half-length) +
+      // 17 (BARR_HW + radius) of its center, a trunk's within ~23 of its
+      // base — anything past 48px can't touch this unit, skip the segDist
+      const bdx = t.x - u.x; if (bdx > 48 || bdx < -48) continue;
+      const bdy = (t.kind === "barr" ? t.y : t.y + 15) - u.y; if (bdy > 52 || bdy < -52) continue;
       if (t.kind === "barr") {
         if (u.vaultT > 0) continue; // mid-vault: passing over the wall, no collision
         const s = barrSeg(t);
@@ -3781,6 +3879,13 @@ function loop(now) {
 // barricades stay, repaired) — only the restart button clears everything.
 function trashReset() {
   for (const t of trees) { t.scars = []; t.chip = 0; t.wob = 0; t.leafSway = 0; }
+  // visible feedback for the wipe (R / trash button): a white puff where each
+  // cleared unit stood, faction puffs for spawners — so a mass clear never
+  // reads as units mysteriously vanishing. Scaled down for huge fields so one
+  // wipe can't flood the particle list past its cap.
+  const pn = units.length > 40 ? 2 : 8;
+  for (const u of units) poof(u.x, u.y, "#ffffff", pn);
+  for (const sp of spawners) poof(sp.x, sp.y, FACTIONS[sp.faction] || "#ffffff", 6);
   units = []; spawners = []; selSp = null; selBarr = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; corpses = []; helmets = []; holes = []; dying = [];
   resetHoleLayer();
   winner = null; everMulti = false; totalKills = 0;
@@ -3801,6 +3906,12 @@ if (!window.__keyBound) {
   addEventListener("keydown", e => {
     if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) { trashReset(); }
     else if (e.key === " " && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) { e.preventDefault(); togglePlay(); }
+    // Esc cancels a spawner/barricade selection (+ its panel) without
+    // touching the picked tool — the keyboard counterpart to tapping empty
+    // ground, now that right-click deliberately does nothing
+    else if (e.key === "Escape" && !e.repeat) {
+      if (selSp || selBarr) { selSp = null; selBarr = null; hideSpanel(); if (brush.spawner) showSppre(); refreshBar(); }
+    }
   });
 }
 // camera keys: WASD + arrows pan the field anytime (paused or playing).
