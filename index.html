@@ -43,13 +43,14 @@
   #barToggle:hover { background:rgba(20,24,18,.92); color:#fff; }
   #barToggle.tb { width:auto; height:auto; }
   /* collapsed HUD hides the whole bar — only the below-center arrow tab remains;
-     collapsed dock keeps its inline arrow tab */
+     collapsed dock keeps its inline arrow tab (row items, submenu, tabs, spawner and info hide) */
   #bar.collapsed { display:none; }
-  #bbar.collapsed > :not(#dockToggle) { display:none; }
+  #bbar.collapsed #bbrow > :not(#dockToggle) { display:none; }
+  #bbar.collapsed > #bbtabs, #bbar.collapsed > #bbspawn, #bbar.collapsed > #bcat, #bbar.collapsed > #uinfo { display:none; }
   #bbar.collapsed { padding:2px; gap:0; min-width:0; bottom:0; }
   #bbar {
     position:fixed; bottom:36px; left:50%; transform:translateX(-50%);
-    display:flex; align-items:center; justify-content:center; gap:6px; min-width:182px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-width:182px;
     background:rgba(20,24,18,.82); backdrop-filter:blur(8px);
     border:1px solid rgba(255,255,255,.12); border-radius:14px;
     padding:6px 10px; z-index:10;
@@ -65,6 +66,34 @@
   #bbspawn { position:absolute; top:calc(100% - 1px); left:50%; transform:translateX(-50%); display:flex; }
   #bbspawn .sptab { border:1px solid rgba(255,255,255,.12); border-top:none; background:rgba(20,24,18,.6); color:#cfd6c9; font-size:11px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; padding:5px 14px 6px; border-radius:0 0 10px 10px; cursor:pointer; }
   #bbspawn .sptab.on { background:rgba(20,24,18,.92); color:#fff; }
+  /* unit-variant submenu: in-flow row below the main dock row, so the
+     attached spawner tab (absolute, bottom-center) always hangs off the
+     very bottom no matter how wide the submenu gets */
+  #bbrow { display:flex; align-items:center; justify-content:center; gap:6px; }
+  #bcat { display:flex; align-items:center; justify-content:center; gap:6px; }
+  #bcat[hidden] { display:none; }
+  #bcat .tb { width:auto; min-width:38px; height:38px; border-radius:11px; padding:0 12px; }
+  #bcat .uname { font-size:12px; font-weight:800; letter-spacing:.02em; text-transform:capitalize; line-height:1; }
+  /* unit info window: pinned to the dock's left edge, follows the dock's width */
+  #uinfo { position:absolute; right:calc(100% + 8px); bottom:0; width:230px; background:rgba(20,24,18,.9); backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:10px 12px; color:#fff; font-size:12px; z-index:11; }
+  #uinfo[hidden] { display:none; }
+  #uihead { display:flex; align-items:center; gap:8px; font-weight:800; font-size:13px; text-transform:capitalize; margin-bottom:6px; }
+  #uiimg { display:block; margin:0 auto 8px; }
+  #uiclose { margin-left:auto; width:26px; height:26px; border-radius:8px; border:1px solid transparent; background:transparent; color:#cfd6c9; font-size:15px; line-height:1; cursor:pointer; }
+  #uiclose:hover { background:rgba(255,255,255,.1); }
+  #uitabs { display:flex; gap:4px; margin-bottom:8px; }
+  #uitabs .uitab { flex:1; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.05); color:#cfd6c9; font-size:11px; font-weight:800; padding:4px 0; border-radius:8px; cursor:pointer; }
+  #uitabs .uitab.on { background:rgba(255,255,255,.16); color:#fff; }
+  #uitabs .uitab[hidden] { display:none; }
+  #uibody { line-height:1.55; color:#cfd6c9; }
+  #uibody .abName { color:#fff; font-weight:800; margin-bottom:4px; }
+  #uibody .statRow { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #uibody .statRow b { color:#fff; font-variant-numeric:tabular-nums; }
+  #uibody .statDiv { height:1px; background:rgba(255,255,255,.14); margin:6px 0; }
+  @media (max-width:700px) {
+    /* narrow screens: the dock fills the width, so the info window sits above it instead of beside it */
+    #uinfo { right:auto; left:0; bottom:calc(100% + 8px); width:min(230px, calc(100vw - 24px)); }
+  }
   #spanel { position:fixed; z-index:30; background:rgba(20,24,18,.82); backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:12px 14px; color:#fff; width:232px; font-size:12px; box-shadow:0 6px 24px rgba(0,0,0,.45); pointer-events:none; }
   #spanel[hidden] { display:none; }
   #spanel input, #spanel button { pointer-events:auto; }
@@ -119,9 +148,10 @@
   }
   .tally i { width:9px; height:9px; border-radius:50%; display:block; }
   .tally.win { outline:2px solid gold; }
+  .tally.cap span { color:#f2c531; } /* faction at the unit cap: count reads yellow */
   #cv { position:fixed; inset:0; width:100vw; height:100vh; display:block; touch-action:none; cursor:crosshair; }
   #cv:focus { outline:none; }
-  /* FPS readout: large pill pinned to the top-right, red when very low */
+  /* FPS readout: large pill pinned to the top-right — green above 60, yellow under 30, red under 10 */
   #fps {
     position:fixed; top:8px; right:10px; z-index:10; pointer-events:none;
     background:rgba(20,24,18,.82); border:1px solid rgba(255,255,255,.12);
@@ -129,6 +159,8 @@
     font-size:26px; font-weight:800; line-height:1.1; color:#fff;
     font-variant-numeric:tabular-nums;
   }
+  #fps.good { color:#69d66f; border-color:rgba(105,214,111,.55); }
+  #fps.mid { color:#f2c531; border-color:rgba(242,197,49,.55); }
   #fps.low { color:#ff6b5e; border-color:rgba(255,90,80,.55); }
   @media (max-width:640px) { #fps { font-size:20px; padding:5px 10px; min-width:52px; } }
   /* version tag: small pill pinned to the top-left (text set from GAME_VERSION) */
@@ -146,7 +178,7 @@
 
 <div id="topWrap"><div id="bar"></div></div>
 <div id="bbar"></div>
-<div id="ver">v0.0.4</div>
+<div id="ver">v0.0.5</div>
 <div id="fps">60</div>
 <canvas id="cv" tabindex="0"></canvas>
 <canvas id="ov"></canvas>
@@ -170,8 +202,8 @@
 "use strict";
 // GAME_VERSION is the single source of truth for the version tag (#ver,
 // top-left). It is bumped ONLY when the user explicitly says so — never
-// as part of any other change. (v0.0.4: bumped by explicit user order.)
-const GAME_VERSION = "v0.0.4";
+// as part of any other change. (v0.0.4, v0.0.5: bumped by explicit user order.)
+const GAME_VERSION = "v0.0.5";
 /* ============================================================
    BATTLE SIM — add a unit by adding one entry to UNIT_DEFS.
    Required fields: hp, speed, range, interval, damage, bulletSpeed,
@@ -179,7 +211,7 @@ const GAME_VERSION = "v0.0.4";
    Optional hooks: update(u,dt,ctx), onFire(u,ctx), drawExtra(u,ctx)
    ============================================================ */
 const UNIT_DEFS = {
-  soldier: { name:"soldier", hp:110, speed:76,  range:250, interval:0.85, damage:34, bulletSpeed:560, radius:13, gunLen:20, gunW:5, spread:0.06, pellets:1, aimJitter:0.02, hold:0.7, mag:6, reload:1.6 },
+  gunner: { name:"gunner", hp:110, speed:76,  range:250, interval:0.85, damage:34, bulletSpeed:560, radius:13, gunLen:20, gunW:5, spread:0.06, pellets:1, aimJitter:0.02, hold:0.7, mag:6, reload:1.6 },
   sniper:  { name:"sniper",  hp:75,  speed:66,  range:520, interval:3.2,  damage:130, bulletSpeed:950, radius:13, gunLen:36, gunW:3, spread:0.008,pellets:1, aimJitter:0.002, hold:1.0, mag:1, reload:3.6 },
 };
 
@@ -188,6 +220,31 @@ const FACTIONS = {
   blue:   "#3b9fe8",
   yellow: "#f2c531",
   purple: "#a678e8",
+};
+// spawn-menu categories: each category button opens a compact variant row
+// below the dock. Soldiers/Snipers live under the Soldiers tab, Trees/
+// Barricades under the Objects tab. To add a future variant (e.g. a new
+// barricade): append its id to the category's variants here (+ a UNIT_INFO
+// entry below, and a sim def / plant path if the brush needs one).
+const UNIT_CATS = {
+  soldiers:   { label: "Soldiers",   tab: "soldiers", variants: ["gunner"] },
+  snipers:    { label: "Snipers",    tab: "soldiers", variants: ["sniper"] },
+  trees:      { label: "Trees",      tab: "objects",  variants: ["tree"] },
+  barricades: { label: "Barricades", tab: "objects",  variants: ["barricade"] },
+};
+// unit info window copy (Description for every brush, Stats where listed,
+// Abilities only where listed). Health mirrors the sim defs (UNIT_DEFS hp,
+// TREE_HP, BARR_HP); stats render as rows split by dividers.
+const UNIT_INFO = {
+  gunner:    { name: "Gunner",    desc: "Weak cannon fodder armed with a basic assault rifle. Best when swarming the enemy in large groups.",
+               stats: [{ k: "Health", v: 110 }] },
+  sniper:    { name: "Sniper",    desc: "Takes out enemies from further away with their deadly sniper's rifle, but is very fragile health-wise.",
+               stats: [{ k: "Health", v: 75 }],
+               abilities: [{ name: "Crouch-Snipe", desc: "While the Sniper's normal shots are weak, they can crouch on the ground to gain deadly precision." }] },
+  tree:      { name: "Tree",      desc: "A common oak tree. Can be used as cover in a pinch.",
+               stats: [{ k: "Health", v: 300 }] },
+  barricade: { name: "Barricade", desc: "A concrete barricade. Makes for good cover.",
+               stats: [{ k: "Health", v: 500 }] },
 };
 const FACTION_KEYS = Object.keys(FACTIONS);
 const DARK = { red:"#8e2a22", blue:"#1f6396", yellow:"#9a7a15", purple:"#5f4390" };
@@ -250,6 +307,7 @@ function attachInput() {
     // clicking the field takes keyboard focus, so WASD/arrows pan from here
     try { cv.focus({ preventScroll: true }); } catch (_) { try { cv.focus(); } catch (_) {} }
     lastBarrPlant = null; // new stroke: chained fills link from this press, not the last one
+    lastUnitDab = null; // new stroke: unit spacing-fill anchors from this press, not the last one
     const p = evPos(e), w = toWorld(p);
     ptrs.set(e.pointerId, { x: p.x, y: p.y });
     if (ptrs.size === 2) { // second finger lands: pan/zoom, never paint/erase
@@ -291,9 +349,9 @@ function attachInput() {
       // objects mode: tapping/dragging plants the picked object (a tap on an
       // existing wall just refuses on spacing — placed walls can't be
       // selected or rotated; the wheel spins the placement ghost instead)
-      { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; paintAt(w.x, w.y); }
+      { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; lastPaint = 0; paintAt(w.x, w.y); }
     }
-    else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; paintAt(w.x, w.y); }
+    else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; lastPaint = 0; paintAt(w.x, w.y); }
     mouse.x = p.x; mouse.y = p.y; mouse.down = true;
     queueGhost();
     try { cv.setPointerCapture(e.pointerId); } catch (_) {}
@@ -418,8 +476,8 @@ function bindCanvas() {
 let units = [], bullets = [], parts = [], corpses = [], helmets = [], holes = [], dying = [];
 let shotsFired = 0, fleshHits = 0; // lifetime diagnostic counters for probes and AI tuning (reset on reload)
 let uid = 1;
-let brush = { unit:"soldier", tab:"soldiers", faction:"red", eraser:false, spawner:false }; // spawner: placement mode that drops a unit-spawner (kind/faction captured from the selection); never offered for trees
-let lastSoldierUnit = "soldier"; // soldiers-tab pick remembered across trips to Objects (so placing a wall never resets sniper -> soldier)
+let brush = { unit:"gunner", tab:"soldiers", faction:"red", eraser:false, spawner:false }; // spawner: placement mode that drops a unit-spawner (kind/faction captured from the selection); never offered for trees
+let lastGunnerUnit = "gunner"; // soldiers-tab pick remembered across trips to Objects (so placing a wall never resets sniper -> gunner)
 let trees = []; // static objects: trees {x,y,r,seed,chip,scars[]} and concrete barricades {kind:"barr",x,y,dir} — bullets chip bark / chip concrete, nothing ever falls
 const TREE_R = 45, TRUNK_R = 14, MAX_TREES = 400;
 const TREE_HP = 300; // dormant health (no destruction yet — reserved for future use)
@@ -441,6 +499,7 @@ let winner = null;            // faction key or unit id in ffa
 let everMulti = false, totalKills = 0; // teams crown needs a real battle: 2+ factions together AND blood spilled
 let lodSimple = false; // heavy-battle LOD: >256 alive drops the subtlest
 // gun/hand detail (barrel core line, round hands); <192 restores it
+const DETAIL_ZOOM = 0.85; // minor field/unit detail (wall speckles, fine gun layers) only renders at/above this zoom — sub-pixel mush below it
 let painting = false, erasing = false;
 let mouse = { x:-999, y:-999, down:false };
 let W = 0, H = 0, DPR = 1;
@@ -469,42 +528,140 @@ function btn(html, title, fn) {
   b.addEventListener("click", e => { e.stopPropagation(); fn(b); refreshBar(); b.blur(); });
   return b;
 }
-let unitBtns = {}, dotBtns = {}, tallyEls = {}, playBtn, modeBtn, speedBackBtn, speedLabelBtn, speedFwdBtn, barToggleBtn, dockToggleBtn;
+let unitBtns = {}, dotBtns = {}, tallyEls = {}, playBtn, modeBtn, speedBackBtn, speedLabelBtn, speedFwdBtn, barToggleBtn, dockToggleBtn, infoBtn;
+let catBtns = {}, bcatPop = null, catOpen = null, lastCatShown = null, catLast = {}; // variant-submenu state: open category + last-picked variant per category (clicking a category reselects its variant)
+let uinfo = null, uiOpen = false, uiTab = "desc", uiKey = "", uiImgKey = ""; // unit info window state (closed by default; the dock "i" toggle reopens it)
 // refreshBar runs 3x/sec as a heartbeat — only touch the DOM when a value
 // actually changed, so the blurred top bar never repaints for no reason
 let _barCache = null;
 function barCache() {
-  if (!_barCache) _barCache = { mode: "", play: null, speed: 0, counts: {}, win: {} };
+  if (!_barCache) _barCache = { mode: "", play: null, speed: 0, counts: {}, win: {}, cap: {} };
   return _barCache;
 }
 let btabSold = null, btabObj = null, btabBtns = {};
+function drawUiPreview() { // exact sprite image of the picked brush (the same art the field renders)
+  const pc = document.getElementById("uiimg"); if (!pc) return;
+  const g = pc.getContext("2d");
+  const key = brush.unit;
+  const f = mode === "ffa" ? "ffa" : brush.faction;
+  const line = (x0, y0, x1, y1) => { g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); };
+  if (key === "gunner" || key === "sniper") {
+    const snip = key === "sniper", glen = UNIT_DEFS[key].gunLen;
+    const spr = snip ? (sniperSpr[f] || sniperSpr.red) : (bodyHelmSpr[f] || bodyHelmSpr.red);
+    if (!spr) return;
+    pc.width = 52 + glen + 8; pc.height = 64; g.lineCap = "butt";
+    const cx = 40, cy = 38; // head center (sprite anchor, as in the field blit)
+    g.drawImage(spr.c, cx - spr.a, cy - spr.b);
+    // shouldered carry, static right-aim parade pose: stock tucked in the
+    // body, barrel alongside the head — same stroke grammar as renderUnits
+    const gx = cx + 4, gy = cy + 9;
+    if (!snip) {
+      g.strokeStyle = "#4a3320"; g.lineWidth = 8; line(gx - 5, gy, gx + glen * 0.2, gy); // wood butt
+      g.strokeStyle = "#2b2b2b"; g.lineWidth = 7; line(gx + glen * 0.2, gy, gx + glen * 0.65, gy); // polymer handguard
+      g.strokeStyle = "#232323"; g.lineWidth = 3; line(gx + glen * 0.65, gy, gx + glen, gy); // thin barrel
+      g.strokeStyle = "#111"; g.lineWidth = 2; line(gx + glen * 0.2, gy, gx + glen, gy); // top rail
+      g.strokeStyle = "#1c1c1c"; g.lineWidth = 4.5; line(gx + glen * 0.4, gy, gx + glen * 0.4 + 4, gy + 7); // angled box mag
+      g.strokeStyle = "#1a1a1a"; g.lineWidth = 4.5; line(gx + glen * 0.14, gy, gx + glen * 0.14 - 3, gy + 6); // pistol grip
+      g.strokeStyle = "#0d0d0d"; g.lineWidth = 2.5; line(gx + glen - 4, gy, gx + glen - 4, gy - 5); // front sight post
+    } else {
+      g.strokeStyle = "#4a3320"; g.lineWidth = 6; line(gx - 5, gy, gx + glen * 0.34, gy); // wood stock
+      g.strokeStyle = "#232323"; g.lineWidth = 3; line(gx + glen * 0.34, gy, gx + glen, gy); // barrel
+      g.strokeStyle = "#111"; g.lineWidth = 2; line(gx + glen * 0.34, gy, gx + glen, gy); // barrel core line
+      g.strokeStyle = "#1c1c1c"; g.lineWidth = 4.5; line(gx + glen * 0.4, gy, gx + glen * 0.4, gy + 6); // straight-drop mag
+    }
+    const A = FCOL[f] || FCOL.red; // round hands, same faction shades as the field
+    g.fillStyle = A.armDark; g.beginPath(); g.arc(gx + glen * 0.14, gy, 4.6, 0, 7); g.fill();
+    g.fillStyle = A.armMid; g.beginPath(); g.arc(gx + glen * 0.62, gy + 2, 4.0, 0, 7); g.fill();
+  } else if (key === "tree") {
+    if (!treeBaseSpr || treeCanSpr.length < 25) { try { buildTreeSprites(); } catch (_) {} }
+    pc.width = 124; pc.height = 124; g.lineCap = "butt";
+    const cx = 62, cy = 71;
+    if (treeBaseSpr) g.drawImage(treeBaseSpr.c, cx + TBB_X, cy + TBB_Y, TBB_W, TBB_H);
+    if (treeCanSpr[12]) g.drawImage(treeCanSpr[12], cx + TBC_X, cy + TBC_Y, TBC_W, TBC_H);
+  } else if (key === "barricade") {
+    if (!barrSprs.length) { try { buildBarrSprites(); } catch (_) {} }
+    pc.width = 116; pc.height = 92; g.lineCap = "butt";
+    const bs = barrSprs[barrDir({ dir: pendingBarrDir })];
+    if (bs) g.drawImage(bs.c, 58 - bs.w / 2, 46 - bs.h / 2, bs.w, bs.h);
+  } else { // unknown brush: clear (the info window hides for brushes with no art, e.g. eraser)
+    pc.width = 64; pc.height = 64;
+  }
+}
+function pickVariant(v) { // variant chosen from the category row: select it, keep the row open
+  brush.unit = v; brush.eraser = false;
+  for (const c of Object.keys(UNIT_CATS)) if (UNIT_CATS[c].variants.includes(v)) {
+    catLast[c] = v;
+    brush.tab = UNIT_CATS[c].tab; // the variant's own tab (soldiers or objects)
+    if (UNIT_DEFS[v]) lastGunnerUnit = v; // soldiers-tab pick remembered across Objects trips
+    else { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } // objects can't have spawners
+  }
+  refreshBar();
+}
+function catFor(unit, tab) { // the category holding this brush on this tab (first of the tab if none does)
+  for (const c of Object.keys(UNIT_CATS)) if (UNIT_CATS[c].tab === tab && UNIT_CATS[c].variants.includes(unit)) return c;
+  for (const c of Object.keys(UNIT_CATS)) if (UNIT_CATS[c].tab === tab) return c;
+  return null;
+}
+function fillUcat(cat) { // rebuild the variant row for the open category (or hide it)
+  if (!bcatPop) return;
+  bcatPop.innerHTML = "";
+  if (!cat || !UNIT_CATS[cat]) { bcatPop.hidden = true; return; }
+  for (const v of UNIT_CATS[cat].variants) {
+    const b = btn(`<span class="uname">${v}</span>`, v, () => pickVariant(v));
+    b.dataset.u = v; unitBtns[v] = b;
+    b.classList.toggle("on", !brush.eraser && brush.unit === v); // highlight now: this row is built after the refreshBar button loop, so fresh buttons would otherwise wait a heartbeat for their .on
+    bcatPop.appendChild(b);
+  }
+  bcatPop.hidden = false;
+}
 function buildBar() {
   _barCache = null; // fresh buttons: forget what the old DOM showed
-  bar.innerHTML = ""; bbar.innerHTML = ""; unitBtns = {}; dotBtns = {}; tallyEls = {};
+  bar.innerHTML = ""; bbar.innerHTML = ""; unitBtns = {}; dotBtns = {}; tallyEls = {}; catBtns = {}; lastCatShown = null;
   const tabs = document.createElement("div"); tabs.id = "bbtabs"; btabBtns = {};
   for (const [key, label] of [["soldiers", "Soldiers"], ["objects", "Objects"]]) {
     const tb = document.createElement("button");
     tb.className = "tab"; tb.textContent = label;
-    tb.addEventListener("click", e => { e.stopPropagation(); brush.tab = key; brush.eraser = false; if (key === "objects") { if (UNIT_DEFS[brush.unit]) lastSoldierUnit = brush.unit; brush.unit = "tree"; } else brush.unit = lastSoldierUnit; if (key === "objects") { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } refreshBar(); tb.blur(); });
+    tb.addEventListener("click", e => { e.stopPropagation(); brush.tab = key; brush.eraser = false; if (key === "objects") { if (UNIT_DEFS[brush.unit]) lastGunnerUnit = brush.unit; brush.unit = "tree"; } else brush.unit = lastGunnerUnit; catOpen = catFor(brush.unit, key); if (key === "objects") { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } refreshBar(); tb.blur(); });
     btabBtns[key] = tb; tabs.appendChild(tb);
   }
   bbar.appendChild(tabs);
+  // main dock row: categories, objects, eraser, info, spawner tab, collapse
+  // toggle (the variant row + attached windows hang off #bbar itself below)
+  const bbrow = document.createElement("div"); bbrow.id = "bbrow"; bbar.appendChild(bbrow);
+  // category buttons (Soldiers, Snipers, ... / Trees, Barricades, ...) — each
+  // opens the compact variant row below the dock instead of placing directly
   btabSold = document.createElement("span"); btabSold.className = "bgroup";
-  for (const k of Object.keys(UNIT_DEFS)) {
-    const b = btn(`<span class="uname">${k}</span>`, k, () => { brush.unit = k; lastSoldierUnit = k; brush.tab = "soldiers"; brush.eraser = false; });
-    b.dataset.u = k; unitBtns[k] = b; btabSold.appendChild(b);
-  }
-  bbar.appendChild(btabSold);
   btabObj = document.createElement("span"); btabObj.className = "bgroup";
-  const tr = btn(`<span class="uname">tree</span>`, "tree (cover — bullets only chip the bark)", () => { brush.unit = "tree"; brush.tab = "objects"; brush.eraser = false; });
-  tr.dataset.u = "tree"; unitBtns.tree = tr; btabObj.appendChild(tr);
-  const br = btn(`<span class="uname">barricade</span>`, "barricade (concrete cover — better than trees; tap to select, scroll to rotate)", () => { brush.unit = "barricade"; brush.tab = "objects"; brush.eraser = false; });
-  br.dataset.u = "barricade"; unitBtns.barricade = br; btabObj.appendChild(br);
-  bbar.appendChild(btabObj);
-  bbar.appendChild(sep());
-  const er = btn(`<span class="uname">eraser</span>`, "eraser", () => { brush.eraser = !brush.eraser; if (brush.eraser) { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } });
-  er.dataset.er = "1"; unitBtns.__eraser = er; bbar.appendChild(er);
-  // spawner tab attached to the bottom of the unit menu (soldiers only —
+  for (const cat of Object.keys(UNIT_CATS)) {
+    const cb = btn(`<span class="uname">${UNIT_CATS[cat].label}</span>`, UNIT_CATS[cat].label + " variants", () => {
+      brush.tab = UNIT_CATS[cat].tab; brush.eraser = false; catOpen = cat;
+      const v = catLast[cat] || UNIT_CATS[cat].variants[0];
+      if (v) { brush.unit = v; if (UNIT_DEFS[v]) lastGunnerUnit = v; else { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } }
+    });
+    cb.dataset.cat = cat; catBtns[cat] = cb;
+    (UNIT_CATS[cat].tab === "objects" ? btabObj : btabSold).appendChild(cb);
+  }
+  bbrow.appendChild(btabSold);
+  // variant row: in-flow below the main row, stays open while its category
+  // is picked (selecting a variant just re-highlights); the spawner tab
+  // stays absolute bottom-center of #bbar, so always below this row
+  bcatPop = document.createElement("div"); bcatPop.id = "bcat"; bcatPop.hidden = true; bbar.appendChild(bcatPop);
+  bbrow.appendChild(btabObj);
+  bbrow.appendChild(sep());
+  const er = btn(`<span class="uname">eraser</span>`, "eraser", () => { brush.eraser = !brush.eraser; if (brush.eraser) { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); catOpen = null; } else catOpen = catFor(brush.unit, brush.tab); });
+  er.dataset.er = "1"; unitBtns.__eraser = er; bbrow.appendChild(er);
+  // unit info toggle: opens/closes the info window pinned to the dock's left edge
+  infoBtn = btn(`<span style="font-weight:800;font-size:15px;">i</span>`, "unit info (about the selected unit)", (b) => { uiOpen = !uiOpen; });
+  bbrow.appendChild(infoBtn);
+  // unit info window (left of the dock): exact sprite image of the picked
+  // brush on top, then Description for every brush, Abilities only where
+  // the unit has any (snipers for now)
+  uinfo = document.createElement("div"); uinfo.id = "uinfo";
+  uinfo.innerHTML = `<div id="uihead"><span id="uiname"></span><button id="uiclose" title="close unit info">×</button></div><canvas id="uiimg" width="110" height="88"></canvas><div id="uitabs"><button class="uitab" data-t="desc">Description</button><button class="uitab" data-t="stats">Stats</button><button class="uitab" data-t="ab">Abilities</button></div><div id="uibody"></div>`;
+  bbar.appendChild(uinfo);
+  uinfo.querySelector("#uiclose").addEventListener("click", e => { e.stopPropagation(); uiOpen = false; refreshBar(); });
+  for (const t of uinfo.querySelectorAll(".uitab")) t.addEventListener("click", e => { e.stopPropagation(); uiTab = t.dataset.t; refreshBar(); t.blur(); });
+  // spawner tab attached to the bottom of the unit menu (units only —
   // objects can't have spawners): toggles placement mode and opens the
   // pre-placement setup window for the next spawner
   const spw = document.createElement("div"); spw.id = "bbspawn";
@@ -514,7 +671,8 @@ function buildBar() {
     e.stopPropagation();
     brush.spawner = !brush.spawner; brush.eraser = false;
     if (brush.spawner) {
-      brush.tab = "soldiers"; if (!UNIT_DEFS[brush.unit]) brush.unit = "soldier";
+      brush.tab = "soldiers"; if (!UNIT_DEFS[brush.unit]) brush.unit = "gunner";
+      catOpen = catFor(brush.unit, brush.tab);
       selSp = null; hideSpanel(); showSppre();
     } else { selSp = null; hideSpanel(); hideSppre(); }
     refreshBar(); spTabBtn.blur();
@@ -525,7 +683,7 @@ function buildBar() {
     const c = bbar.classList.toggle("collapsed");
     b.innerHTML = `<span style="font-weight:800;font-size:15px;">${c ? "▾" : "▴"}</span>`;
   });
-  dockToggleBtn.id = "dockToggle"; bbar.appendChild(dockToggleBtn);
+  dockToggleBtn.id = "dockToggle"; bbrow.appendChild(dockToggleBtn);
   for (const f of FACTION_KEYS) {
     const d = document.createElement("button");
     d.className = "dot"; d.title = f; d.style.background = FACTIONS[f];
@@ -562,6 +720,7 @@ function buildBar() {
   });
   barToggleBtn.id = "barToggle";
   document.getElementById("topWrap").appendChild(barToggleBtn);
+  catOpen = catFor(brush.unit, brush.tab); // boot: the row opens on the brush's own category
   refreshBar();
 }
 function togglePlay() {
@@ -577,6 +736,41 @@ function refreshBar() {
   for (const k of Object.keys(unitBtns)) {
     if (k === "__eraser") unitBtns[k].classList.toggle("on", brush.eraser);
     else unitBtns[k].classList.toggle("on", !brush.eraser && brush.unit === k);
+  }
+  // category buttons light up when the picked brush lives in that category;
+  // the variant row shows while its category is open (either dock tab)
+  for (const cat of Object.keys(catBtns)) catBtns[cat].classList.toggle("on", !brush.eraser && (UNIT_CATS[cat] ? UNIT_CATS[cat].variants.includes(brush.unit) : false));
+  const showCat = (!brush.eraser && catOpen && UNIT_CATS[catOpen]) ? catOpen : null;
+  if (showCat !== lastCatShown) { lastCatShown = showCat; fillUcat(showCat); }
+  // unit info window: follows the picked brush (never the eraser — its use
+  // is self-explanatory); Description for every brush, Stats where the unit
+  // has any, Abilities only where the unit has any
+  if (uinfo) {
+    const vis = uiOpen && !brush.eraser;
+    uinfo.hidden = !vis;
+    if (infoBtn) infoBtn.classList.toggle("on", uiOpen);
+    const uk = brush.unit;
+    const info = UNIT_INFO[uk] || UNIT_INFO.gunner;
+    if (uiTab === "ab" && !info.abilities) uiTab = "desc";
+    if (uiTab === "stats" && !info.stats) uiTab = "desc";
+    const key = uk + "|" + uiTab;
+    if (vis && key !== uiKey) {
+      uiKey = key;
+      uinfo.querySelector("#uiname").textContent = info.name;
+      for (const t of uinfo.querySelectorAll(".uitab")) {
+        const tt = t.dataset.t;
+        t.hidden = (tt === "ab" && !info.abilities) || (tt === "stats" && !info.stats);
+        t.classList.toggle("on", tt === uiTab);
+      }
+      const body = uinfo.querySelector("#uibody");
+      if (uiTab === "ab" && info.abilities) body.innerHTML = info.abilities.map(a => `<div class="abName">[${a.name}]</div><div>${a.desc}</div>`).join("");
+      else if (uiTab === "stats" && info.stats) body.innerHTML = info.stats.map(s => `<div class="statRow"><span>${s.k}</span><b>${s.v}</b></div>`).join('<div class="statDiv"></div>');
+      else body.textContent = info.desc;
+    }
+    // preview image: same sprites the field renders; redraws on brush,
+    // faction, FFA look, or barricade ghost direction — text above is separate
+    const imgKey = uk + "|" + (mode === "ffa" ? "ffa" : brush.faction) + "|" + (uk === "barricade" ? barrDir({ dir: pendingBarrDir }) : "");
+    if (vis && imgKey !== uiImgKey) { uiImgKey = imgKey; drawUiPreview(); }
   }
   if (spTabBtn) {
     spTabBtn.classList.toggle("on", brush.spawner && !brush.eraser);
@@ -601,6 +795,8 @@ function refreshBar() {
     const el = tallyEls[f];
     const c = counts[f] || 0;
     if (bc.counts[f] !== c) { el.querySelector("span").textContent = c; bc.counts[f] = c; }
+    const atCap = factionCount(f) >= MAX_UNITS;
+    if (bc.cap[f] !== atCap) { el.classList.toggle("cap", atCap); bc.cap[f] = atCap; }
     const w = mode === "ffa" ? false : (winner === f);
     if (bc.win[f] !== w) {
       el.classList.toggle("win", !!w);
@@ -850,14 +1046,14 @@ function rollSideClear(x, y, dx, dy, r) {
 // vaulted over, not avoided). Null when both sides run off the map —
 // holding beats grinding on the edge.
 function pickRollDir(u, nx, ny) {
-  const def = UNIT_DEFS[u.kind] || UNIT_DEFS.soldier, r = def.radius;
+  const def = UNIT_DEFS[u.kind] || UNIT_DEFS.gunner, r = def.radius;
   let ax = 0, ay = 0;
   if (u.tx && u.tx.hp > 0) {
     const rx = u.x - u.tx.x, ry = u.y - u.tx.y, rl = Math.max(1, Math.hypot(rx, ry));
     ax = rx / rl; ay = ry / rl;
   }
   let cx = 0, cy = 0;
-  if (u.coverTree && trees.includes(u.coverTree)) {
+  if (u.coverTree && treeSet.has(u.coverTree)) {
     const rx = u.coverTree.x - u.x, ry = u.coverTree.y - u.y, rl = Math.max(1, Math.hypot(rx, ry));
     if (rl > 20) { cx = rx / rl; cy = ry / rl; }
   }
@@ -871,7 +1067,7 @@ function pickRollDir(u, nx, ny) {
   opts.sort((a, b) => ((b.ok ? 1 : 0) - (a.ok ? 1 : 0)) || (score(b) - score(a)));
   return opts[0].ok ? opts[0] : null;
 }
-// Near-miss impacts startle nearby soldiers into rolling clear (sideways to
+// Near-miss impacts startle nearby gunners into rolling clear (sideways to
 // the bullet's path). Only runs on misses, so it stays cheap. Only dives
 // when the round actually buzzed past the unit — close to its path and on
 // its way through — never for distant dirt impacts or side splashes, and
@@ -947,9 +1143,10 @@ function groundLayers() {
 // (zoom-baked composite + slice blitter removed: tiles above need no rebake)
 
 // ---------- spawning / editing ----------
-const MAX_UNITS = 400;
+const MAX_UNITS = 500; // per-faction live-unit cap: each faction fields up to 500 of its own
+function factionCount(f) { let n = 0; for (const u of units) if (u.faction === f) n++; return n; }
 function spawn(kind, faction, x, y) {
-  if (units.length >= MAX_UNITS) return null;
+  if (factionCount(faction) >= MAX_UNITS) return null;
   const d = UNIT_DEFS[kind];
   const u = {
     id: uid++, kind, faction, x, y,
@@ -970,7 +1167,7 @@ function spawn(kind, faction, x, y) {
     skill: 0.75 + Math.random() * 0.55, aggr: 0.88 + Math.random() * 0.27,
     fleeHp: 0.3 + Math.random() * 0.15, weave: Math.random() * Math.PI * 2,
     cover: Math.random() < (kind === "sniper" ? 1.0 : 0.95), coverSide: Math.random() < 0.5 ? -1 : 1, coverTree: null, coverHold: false, // snipers always work cover when any stands
-    spdMul: 0.9 + Math.random() * 0.2, // individual pace: no two soldiers march alike
+    spdMul: 0.9 + Math.random() * 0.2, // individual pace: no two gunners march alike
     sp: 0, // spawner id that summoned this unit (0 = hand-placed)
 // perf-cache fields (pre-initialized so every unit shares one hidden class;
 // the step code only ever assigns these, never adds new shapes mid-battle)
@@ -1046,7 +1243,7 @@ function spawnerAt(x, y) {
   }
   return hit;
 }
-// Drops a spawner that periodically summons the currently selected soldier
+// Drops a spawner that periodically summons the currently selected unit
 // kind in the currently selected faction, starting from the pre-placement
 // window's cap + cooldown + spawn distance (each spawner is then tweaked
 // on its own through the per-spawner panel). Objects can't have spawners.
@@ -1086,6 +1283,8 @@ function trySpawnAt(sp) {
     const u = spawn(sp.kind, sp.faction, x, y);
     if (!u) return false;
     u.sp = sp.id;
+    // spawner census was snapshotted before this summon — keep it exact
+    spCount.set(sp.id, (spCount.get(sp.id) || 0) + 1);
     poof(x, y, FACTIONS[sp.faction] || "#ffffff", 4);
     return true;
   }
@@ -1122,9 +1321,9 @@ function hideSpanel() {
 function buildSpanel() {
   const mx = document.getElementById("spmax"), cd = document.getElementById("spcd");
   if (!mx || mx.__wired) return; mx.__wired = true;
-  mx.addEventListener("input", () => { if (selSp) { selSp.maxUnits = +mx.value; refreshSpanel(); } });
-  cd.addEventListener("input", () => { if (selSp) { selSp.cd = +cd.value; refreshSpanel(); } });
-  document.getElementById("spdist").addEventListener("input", e => { if (selSp) { selSp.spawnR = +e.target.value; refreshSpanel(); } });
+  mx.addEventListener("input", () => { if (selSp) { selSp.maxUnits = Math.max(1, Math.min(50, +mx.value || 4)); refreshSpanel(); } });
+  cd.addEventListener("input", () => { if (selSp) { selSp.cd = Math.max(1, Math.min(60, +cd.value || 5)); refreshSpanel(); } });
+  document.getElementById("spdist").addEventListener("input", e => { if (selSp) { selSp.spawnR = Math.max(20, Math.min(100, +e.target.value || 34)); refreshSpanel(); } });
   document.getElementById("spdel").addEventListener("click", e => {
     e.stopPropagation();
     if (selSp) { const i = spawners.indexOf(selSp); if (i >= 0) poof(selSp.x, selSp.y, "#ffffff", 8), spawners.splice(i, 1); selSp = null; }
@@ -1165,9 +1364,9 @@ function buildSppre() {
   const mx = document.getElementById("ppmax");
   if (!mx || mx.__wired) return; mx.__wired = true;
   const cd = document.getElementById("ppcd");
-  mx.addEventListener("input", () => { pendingSp.maxUnits = +mx.value; refreshSppre(); });
-  cd.addEventListener("input", () => { pendingSp.cd = +cd.value; refreshSppre(); });
-  document.getElementById("ppdist").addEventListener("input", e => { pendingSp.spawnR = +e.target.value; refreshSppre(); });
+  mx.addEventListener("input", () => { pendingSp.maxUnits = Math.max(1, Math.min(50, +mx.value || 4)); refreshSppre(); });
+  cd.addEventListener("input", () => { pendingSp.cd = Math.max(1, Math.min(60, +cd.value || 5)); refreshSppre(); });
+  document.getElementById("ppdist").addEventListener("input", e => { pendingSp.spawnR = Math.max(20, Math.min(100, +e.target.value || 34)); refreshSppre(); });
   document.getElementById("ppclose").addEventListener("click", e => { e.stopPropagation(); brush.spawner = false; hideSppre(); refreshBar(); });
 }
 function plantTree(x, y) {
@@ -1454,8 +1653,18 @@ function chipTree(t, x, y, b) {
 // per-candidate full-unit scan (was trees×units per caller per tick).
 let coverOcc = new Map();
 let treeSet = new Set();
+let treeSetV = -1; // treeSet rebuilds only when the terrain actually changed (or the size drifted — see step)
 let tgtCount = new Map();
+let spCount = new Map(); // per-step live summons per spawner id (replaces an O(spawners x units) census)
 let stepTick = 0; // per-step counter (throttles/staggers periodic scans)
+// unit-grid key fns (module scope: step() used to reallocate both closures every tick)
+const UGS = 48;
+const ugk = (x, y) => { const cx = (((x / UGS) | 0) + 128), cy = (((y / UGS) | 0) + 128); return cx * 2048 + cy; };
+const ugk3 = (ix, iy) => ((ix + 128) * 2048 + (iy + 128));
+// baked rotated-corpse cache: touchdown rotation is always exactly +/-PI/2,
+// so per-death canvas bakes collapse into at most (5 factions x 3 kinds x 2)
+// shared images, baked once on first use — identical pixels, no per-kill alloc
+const corpseImgCache = new Map();
 // Static-cover broadphase for bullets AND bodies: cells hold trees in `trees`
 // order, and each tree is entered in every cell its shape can reach with a
 // margin (BARR_HW/TRUNK_R + 10) that covers both bullet skins and the widest
@@ -1595,7 +1804,7 @@ function seekCover(u, dx, dy, d, retreat) {
     const along = rx * ex + ry * ey;
     if (wnd ? along > 120 : along < rearCut) continue;
     const occ = coverOcc.get(t); // allies already on this cover (self excluded)
-    const cap = t.kind === "barr" ? 5 : 3; // a wall shelters more soldiers than a trunk
+    const cap = t.kind === "barr" ? 5 : 3; // a wall shelters more gunners than a trunk
     if (((occ && occ[u.faction]) || 0) - (u.coverTree === t ? 1 : 0) >= cap) continue;
     let score = wnd ? du + along * 0.5 : du - Math.min(along, 120) * 0.5;
     // concrete beats wood — unless the wall is end-on to the threat and
@@ -1909,19 +2118,23 @@ function renderTreeBases() {
   // aggregate speckle batches into one path + one fill (deterministic per
   // wall: no flicker, no repeat). Bodies above stay in array order; dots
   // landing on a chained neighbor read the same on concrete either way.
-  ctx.fillStyle = "rgba(90,94,100,0.45)";
-  ctx.beginPath();
-  for (const t of trees) {
-    if (t.kind !== "barr") continue;
-    if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
-    const dd = barrDir(t), ax = BARR_COS[dd], ay = BARR_SIN[dd];
-    for (let k = 0; k < 8; k++) {
-      const spx = -BARR_HALF + 4 + (Math.abs(t.x * 7 + t.y * 13 + k * 17) % (BARR_HALF * 2 - 8));
-      const spy = -BARR_HW + 3 + (Math.abs(t.x * 3 + t.y * 11 + k * 29) % (BARR_HW * 2 - 6));
-      ctx.rect(t.x + spx * ax - spy * ay, t.y + spx * ay + spy * ax, 1.6, 1.6);
+  // Zoom-gated: 1.6px dots are sub-pixel mush below DETAIL_ZOOM (same bar
+  // as the unit LOD), so far views skip the path-building entirely.
+  if (zoom >= DETAIL_ZOOM) {
+    ctx.fillStyle = "rgba(90,94,100,0.45)";
+    ctx.beginPath();
+    for (const t of trees) {
+      if (t.kind !== "barr") continue;
+      if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
+      const dd = barrDir(t), ax = BARR_COS[dd], ay = BARR_SIN[dd];
+      for (let k = 0; k < 8; k++) {
+        const spx = -BARR_HALF + 4 + (Math.abs(t.x * 7 + t.y * 13 + k * 17) % (BARR_HALF * 2 - 8));
+        const spy = -BARR_HW + 3 + (Math.abs(t.x * 3 + t.y * 11 + k * 29) % (BARR_HW * 2 - 6));
+        ctx.rect(t.x + spx * ax - spy * ay, t.y + spx * ay + spy * ax, 1.6, 1.6);
+      }
     }
+    ctx.fill();
   }
-  ctx.fill();
 }
 function renderTreeCanopies() {
   // crown sits high (center y-8) so it reads as a tree, not a bush.
@@ -1949,10 +2162,52 @@ function renderTreeCanopies() {
   }
   ctx.imageSmoothingEnabled = false;
 }
-let lastPaint = 0;
+let lastPaint = 0; // 30ms dab throttle for DRAG-painting only (keeps slow in-place strokes from over-piling). Taps must never drop: pointerdown resets this to 0 before paintAt, so every click places exactly one unit/object. Fast MOVING unit strokes bypass the clock below via spacing fill, so a fast drag paints a solid trail instead of sparse dots.
 let lastBarrPlant = null; // drag-chaining anchor: successful plants link into lines
+const UNIT_FILL = 20; // unit-stroke hop spacing: a drag that outruns the 30ms clock fills dabs every 20px from the last dab (unit diameter is 26, so the trail overlaps solid)
+let lastUnitDab = null; // last unit dab of this stroke (anchor for the spacing fill above; reset on pointerdown)
+function tryUnitDab(x, y, def, quiet) {
+  // one unit dab: placement checks + spawn + stroke bookkeeping.
+  // true = placed, false = refused spot, null = faction at cap (MAX_UNITS).
+  // Refusals stay silent inside a spacing fill (quiet) so dragging across a
+  // tree/wall doesn't spam gray poofs; the stroke endpoint still reports.
+  for (const t of trees) { const dx = t.x-x, dy = t.y-y, m = t.r + def.radius; if (dx*dx+dy*dy < m*m) { if (!quiet) poof(x, y, "#999999", 4); return false; } }
+  // ... plus an exact segment check for walls end-on: the center test above
+  // can pass with the spawn point past a wall's end but inside its capsule.
+  // Units never spawn standing on concrete.
+  if (true) for (const t of trees) {
+    if (t.kind !== "barr") continue;
+    const s = barrSeg(t);
+    if (segDist(x, y, s[0], s[1], s[2], s[3]) < BARR_HW + def.radius) { if (!quiet) poof(x, y, "#999999", 4); return false; }
+  }
+  if (true) for (const s of spawners) { const dx = s.x-x, dy = s.y-y; if (dx*dx+dy*dy < 32*32) { if (!quiet) poof(x, y, "#999999", 4); return false; } }
+  const nu = spawn(brush.unit, brush.faction, x + (Math.random()*6-3), y + (Math.random()*6-3));
+  // a faction at cap (MAX_UNITS) gets the same gray puff a failed spawner does.
+  if (!nu) { if (!quiet) poof(x, y, "#999999", 4); return null; }
+  lastUnitDab = { x, y };
+  if (strokeNew) strokeNew.push({ arr: units, o: nu });
+  refreshBar();
+  return true;
+}
 function paintAt(x, y) {
   const now = performance.now();
+  const udef = UNIT_DEFS[brush.unit];
+  // fast unit strokes interpolate first: fill spacing hops from the last dab
+  // up to (not including) this point, so a drag that outruns the 30ms dab
+  // clock below still paints a solid trail. Distance-driven, so it never
+  // over-piles a slow/in-place stroke; later hops keep their rhythm from the
+  // last success (a refused hop just skips), and a full field stops the fill
+  // (the endpoint below reports it once).
+  if (udef && lastUnitDab) {
+    const fdx = x - lastUnitDab.x, fdy = y - lastUnitDab.y;
+    const fd = Math.hypot(fdx, fdy);
+    if (fd >= UNIT_FILL) {
+      const ox = lastUnitDab.x, oy = lastUnitDab.y;
+      for (let dd = UNIT_FILL; dd < fd; dd += UNIT_FILL) {
+        if (tryUnitDab(ox + fdx * dd / fd, oy + fdy * dd / fd, udef, true) === null) break;
+      }
+    }
+  }
   if (now - lastPaint < 30) return; lastPaint = now;
   if (brush.spawner) { const ps0 = placeSpawner(x, y); if (ps0 && strokeNew) strokeNew.push({ arr: spawners, o: ps0 }); return; } // drag trail places silently; tapping selects (see pointerdown)
   if (brush.unit === "tree") { const pt0 = plantTree(x, y); if (pt0 && strokeNew) strokeNew.push({ arr: trees, o: pt0 }); return; }
@@ -1980,22 +2235,9 @@ function paintAt(x, y) {
   if (!def) return;
   // units stack freely here — no unit-vs-unit spacing check, so clicks and
   // drags can pile spawns onto the same spot; separation sorts out the pile.
-  let ok = true;
-  for (const t of trees) { const dx = t.x-x, dy = t.y-y, m = t.r + def.radius; if (dx*dx+dy*dy < m*m) { ok = false; break; } }
-  // ... plus an exact segment check for walls end-on: the center test above
-  // can pass with the spawn point past a wall's end but inside its capsule.
-  // Units never spawn standing on concrete.
-  if (ok) for (const t of trees) {
-    if (t.kind !== "barr") continue;
-    const s = barrSeg(t);
-    if (segDist(x, y, s[0], s[1], s[2], s[3]) < BARR_HW + def.radius) { ok = false; break; }
-  }
-  if (ok) for (const s of spawners) { const dx = s.x-x, dy = s.y-y; if (dx*dx+dy*dy < 32*32) { ok = false; break; } }
-  // silent failures here read as "placed units vanished": a blocked spot or a
-  // full field (MAX_UNITS) gets the same gray puff a failed spawner does.
-  if (!ok) { poof(x, y, "#999999", 4); return; }
-  const nu = spawn(brush.unit, brush.faction, x + (Math.random()*6-3), y + (Math.random()*6-3));
-  if (!nu) poof(x, y, "#999999", 4); else { if (strokeNew) strokeNew.push({ arr: units, o: nu }); refreshBar(); }
+  // Silent failures here read as "placed units vanished": a blocked spot or a
+  // faction at cap (MAX_UNITS) gets the same gray puff a failed spawner does.
+  tryUnitDab(x, y, def, false);
 }
 
 // ---------- combat ----------
@@ -2073,7 +2315,7 @@ function fire(u, def) {
   if (u.ammo <= 0) { u.reloading = def.reload || 2; }
   const n = def.pellets || 1;
   const skill = u.skill || 1;
-  // skilled soldiers shoot tighter; crouch steadies, movement loosens.
+  // skilled gunners shoot tighter; crouch steadies, movement loosens.
   // Target transverse speed opens the group up (handled via lead + error).
   const tSpd = u.tx ? Math.sqrt((u.tx.vx || 0) * (u.tx.vx || 0) + (u.tx.vy || 0) * (u.tx.vy || 0)) : 0;
   const moveK = 1 + Math.min(1, tSpd / 220) * 0.6;
@@ -2094,9 +2336,9 @@ function fire(u, def) {
   const shx = -oy * 5 * sideF, shy = ox * 5 * sideF;
   const tipX = u.x + ox * (def.radius - 9 + def.gunLen) + shx, tipY = u.y + 4 + oy * (def.radius - 9 + def.gunLen) + shy;
   // snipers only hit like snipers on focused shots (the trail stance) —
-  // snap/moving shots deal soldier-level damage
+  // snap/moving shots deal gunner-level damage
   const focused = u.kind === "sniper" && (u.crouch || 0) > 0.75 && (u.spd || 0) < 10;
-  const baseDmg = u.kind === "sniper" && !focused ? UNIT_DEFS.soldier.damage : def.damage;
+  const baseDmg = u.kind === "sniper" && !focused ? UNIT_DEFS.gunner.damage : def.damage;
   for (let i = 0; i < n; i++) {
     const a = u.aim + (Math.random() - 0.5) * 2 * spread + (Math.random()-0.5)*def.aimJitter*jitK;
     const sp = def.bulletSpeed * (0.92 + Math.random() * 0.16);
@@ -2169,12 +2411,17 @@ function step(dt) {
   // (≤5 wall) caps, tgtCount feeds the focus-fire duel-pairing cap.
   // (same-tick joins/leaves keep both maps exact; acquire maintains
   // tgtCount as it reassigns, coverJoin/coverLeave maintain coverOcc)
-  const grid = new Map(), GS = 48;
-  const gk = (x, y) => { const cx = (((x / GS) | 0) + 128), cy = (((y / GS) | 0) + 128); return cx * 2048 + cy; };
-  const gk3 = (ix, iy) => ((ix + 128) * 2048 + (iy + 128));
+  const grid = new Map();
+  // per-tick snapshots start empty, fill in the pass below, and stay alive
+  // for the whole step: joins/leaves (cover) and reassigns (targets) keep
+  // them exact as the tick's assignments change.
+  coverOcc = new Map();
+  tgtCount = new Map();
+  spCount = new Map();
   for (const u of units) {
+    if (u.hp > 0 && u.sp) spCount.set(u.sp, (spCount.get(u.sp) || 0) + 1);
     if (u.hp <= 0 || !isFinite(u.x + u.y)) continue;
-    const k = gk(u.x, u.y);
+    const k = ugk(u.x, u.y);
     let a = grid.get(k); if (!a) { a = []; grid.set(k, a); } a.push(u);
     // same-tick occupancy + target counts (joins/leaves during the tick keep
     // both maps exact; acquire maintains tgtCount as it reassigns below)
@@ -2188,9 +2435,11 @@ function step(dt) {
     }
   }
   stepTick++;
-  treeSet = new Set(trees);
-  coverOcc = new Map();
-  tgtCount = new Map();
+  // treeSet validates "is this exact cover object still planted" for the grid
+  // pass above (which runs on last tick's set — fine, 1-tick stale at most).
+  // Terrain edits are rare vs steps, so rebuild only when the version moved
+  // or the size drifted (script-pushed trees that bypass bumpTrees).
+  if (treeSetV !== treesV || treeSet.size !== trees.length) { treeSetV = treesV; treeSet = new Set(trees); }
   // big battles stretch the retarget interval (up to 2.5x at 375+ units):
   // the sticky check + kill-triggered instant reacquire keep targeting
   // responsive while the periodic O(n) rescan thins out
@@ -2287,7 +2536,7 @@ function step(dt) {
     }
     let mvx = 0, mvy = 0;
     u.moving = false;
-    let limp = 1; // hurt soldiers limp (recomputed in the target branch)
+    let limp = 1; // hurt gunners limp (recomputed in the target branch)
     if (u.tx) {
       const dx = u.tx.x - u.x, dy = u.tx.y - u.y;
       const d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -2426,7 +2675,7 @@ function step(dt) {
         }
         u.moving = true;
       } else if (wounded) {
-        // hurt soldiers drag themselves to the nearest trunk and shoot back
+        // hurt gunners drag themselves to the nearest trunk and shoot back
         // from behind it instead of routing into the open; with no wood in
         // reach they fall back (or last-stand when cornered) as before
         const wc = u.kind === "sniper" ? sniperCover(u, dx, dy, d, true) : (u.cover ? seekCover(u, dx, dy, d) : null);
@@ -2445,7 +2694,7 @@ function step(dt) {
           u.moving = true;
         }
       } else if (d > def.range) {
-        // serpentine advance: soldiers close on a weaving line so the enemy
+        // serpentine advance: gunners close on a weaving line so the enemy
         // can't just lead them; snipers march in steadily
         const wAmp = u.kind === "sniper" ? 0.15 : 0.55;
         mvx = dx / d + oxp * weave * wAmp * u.strafeDir;
@@ -2641,8 +2890,7 @@ function step(dt) {
           const key = blk === "edge" ? "e" : blk;
           if (u.escKey !== key) {
             if (u.escStuckX === undefined) { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; }
-            else if (Math.hypot(u.x - u.escStuckX, u.y - u.escStuckY) < 6) u.escStuck++;
-            else { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; }
+            else { const esdx = u.x - u.escStuckX, esdy = u.y - u.escStuckY; if (esdx * esdx + esdy * esdy < 36) u.escStuck++; else { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; } }
             if ((u.escStuck || 0) >= 4) { u.escKey = key; u.escT = 1.0; u.escSx = blx; u.escSy = bly; u.escStuck = 0; u.escStuckX = undefined; }
           }
           if (u.escKey === key) {
@@ -2770,8 +3018,8 @@ function step(dt) {
       // loop), and the target's own wall is a legitimate target anyway — so
       // walls are skipped here entirely, empty or not.
       let laneBlocked = false;
-      let wallBlocked = false; // (soldiers) any wall eating our shots — see below
-      let trunkBlocked = false; // (soldiers) any trunk eating our shots — see below
+      let wallBlocked = false; // (gunners) any wall eating our shots — see below
+      let trunkBlocked = false; // (gunners) any trunk eating our shots — see below
       if (engaged && u.kind === "sniper" && d > 40 && u.tx && u.tx.hp > 0) {
         const lax = Math.cos(u.aim), lay = Math.sin(u.aim);
         const lside = (u.id % 2 === 0) ? 1 : -1;
@@ -2794,7 +3042,7 @@ function step(dt) {
         mvx += oxp * (u.coverSide || 1) * 1.2; mvy += oyp * (u.coverSide || 1) * 1.2;
         u.moving = true;
       }
-      // (soldiers) shooting into a covered target's wall: concrete only stops
+      // (gunners) shooting into a covered target's wall: concrete only stops
       // a round when someone is actively using that wall as cover, so an
       // empty wall — own, mid-line, or anyone else's — is shot straight
       // through. Only the TARGET's own covering wall (assigned + tucked +
@@ -2829,7 +3077,7 @@ function step(dt) {
           u.moving = true;
         }
       }
-      // (soldiers) shooting into a trunk: bark eats those rounds, so a
+      // (gunners) shooting into a trunk: bark eats those rounds, so a
       // non-target trunk crossing the muzzle->target lane holds fire —
       // sidestep for a clear lane instead of mag-dumping wood. The target's
       // own tree stays legitimate while it's actively tucked behind it
@@ -2880,9 +3128,9 @@ function step(dt) {
         }
         if (!victim) {
           let bd2 = Infinity;
-          const qx = (u.x / GS) | 0, qy = (u.y / GS) | 0;
+          const qx = (u.x / UGS) | 0, qy = (u.y / UGS) | 0;
           for (let ix = qx - 1; ix <= qx + 1; ix++) for (let iy = qy - 1; iy <= qy + 1; iy++) {
-            const cell = grid.get(gk3(ix, iy)); if (!cell) continue;
+            const cell = grid.get(ugk3(ix, iy)); if (!cell) continue;
             for (const o of cell) {
               if (!isEnemy(u, o)) continue;
               const tdef = UNIT_DEFS[o.kind] || def;
@@ -2915,25 +3163,25 @@ function step(dt) {
       }
     } else {
       // no target: hold the gun where it is. No drifting, no spinning —
-      // targetless soldiers stand their muzzle still.
+      // targetless gunners stand their muzzle still.
       u.running = false; u.cornered = false;
       u.crouch = (u.crouch || 0) * Math.max(0, 1 - dt * 4); // stand back up with no target
       // snipers camp: with no one to shoot, walk to the nearest wood within
-      // reach and wait there instead of standing in the open (soldiers keep
+      // reach and wait there instead of standing in the open (gunners keep
       // their slow drift). No threat axis without a target — nearest trunk
       // plus a standoff, not the threat-relative cover point. Walls beat
       // trunks here too.
       let camped = false;
       if (u.kind === "sniper" && u.cover && trees.length) {
-        let bt = null, bs = Infinity;
+        let bt = null, bs = Infinity, bd2 = 0;
         for (const t of trees) {
           const rx = t.x - u.x, ry = t.y - u.y, d2 = rx * rx + ry * ry;
           const scored = d2 - (t.kind === "barr" ? 150 * 150 : 0);
           if (d2 > 340 * 340 || scored >= bs) continue;
-          bs = scored; bt = t;
+          bs = scored; bt = t; bd2 = d2;
         }
         if (bt) {
-          const bd = Math.max(1, Math.hypot(bt.x - u.x, bt.y - u.y));
+          const bd = Math.max(1, Math.sqrt(bd2));
           if (bd > 45) { mvx = (bt.x - u.x) / bd * 0.7; mvy = (bt.y - u.y) / bd * 0.7; }
           else { mvx = 0; mvy = 0; } // posted at the wood: wait
           camped = true;
@@ -2970,9 +3218,9 @@ function step(dt) {
       anx = u._fanx || 0; any = u._fany || 0; anc = u._fanc || 0;
       allyBlockFresh = !!u.allyBlock;
     } else {
-    const cx = (u.x / GS) | 0, cy = (u.y / GS) | 0;
+    const cx = (u.x / UGS) | 0, cy = (u.y / UGS) | 0;
     for (let ix = cx - 1; ix <= cx + 1; ix++) for (let iy = cy - 1; iy <= cy + 1; iy++) {
-      const cell = grid.get(gk3(ix, iy)); if (!cell) continue;
+      const cell = grid.get(ugk3(ix, iy)); if (!cell) continue;
       for (const o of cell) {
         if (o === u || o.hp <= 0) continue;
         const allied = mode === "teams" && o.faction === u.faction;
@@ -3236,10 +3484,11 @@ function step(dt) {
     sp.t -= dt;
     if (sp.rt > 0) sp.rt -= dt;
     sp.pulse = Math.max(0, (sp.pulse || 0) - dt * 2);
-    let n = 0;
-    for (const u of units) if (u.hp > 0 && u.sp === sp.id) n++;
+    // live summons were censused in the grid pass above (same set the old
+    // O(spawners x units) scan counted: hp > 0 and summoned by this spawner)
+    const n = spCount.get(sp.id) || 0;
     sp.n = n;
-    if (sp.t <= 0 && n < sp.maxUnits && units.length < MAX_UNITS && (sp.rt || 0) <= 0) {
+    if (sp.t <= 0 && n < sp.maxUnits && factionCount(sp.faction) < MAX_UNITS && (sp.rt || 0) <= 0) {
       if (trySpawnAt(sp)) { sp.t = sp.cd; sp.pulse = 1; sp.rt = 0; }
       else sp.rt = 0.5;
     }
@@ -3292,9 +3541,9 @@ function step(dt) {
         }
       }
       if (!dead) {
-        const bcx = ((b.x / GS) | 0), bcy = ((b.y / GS) | 0);
+        const bcx = ((b.x / UGS) | 0), bcy = ((b.y / UGS) | 0);
         outer: for (let ix = bcx - 1; ix <= bcx + 1; ix++) for (let iy = bcy - 1; iy <= bcy + 1; iy++) {
-          const cell = grid.get(gk3(ix, iy)); if (!cell) continue;
+          const cell = grid.get(ugk3(ix, iy)); if (!cell) continue;
           for (const u of cell) {
             if (u.hp <= 0 || u.id === b.owner) continue;
             if (mode === "teams" && u.faction === b.faction) continue;
@@ -3389,10 +3638,17 @@ function step(dt) {
       const base = (corpseSpr[dispFaction(d.faction)] || corpseSpr.red)[d.kind === "sniper" ? (d.hat ? 2 : 0) : (d.helmet ? 1 : 0)];
       let img = null;
       if (base) {
-        const S = 72, [cc, gg] = canvas2d(S, S);
-        gg.translate(S / 2, S / 2); gg.rotate(target);
-        gg.drawImage(base.c, -base.a, -base.b, base.w, base.h);
-        img = { c: cc, w: S, h: S, a: S / 2, b: S / 2 };
+        // touchdown rotation is always exactly +/-PI/2, so the per-death bake
+        // collapses into shared images (same pixels, baked once per combo)
+        const ck = dispFaction(d.faction) + "|" + (d.kind === "sniper" ? (d.hat ? 2 : 0) : (d.helmet ? 1 : 0)) + "|" + (target < 0 ? 0 : 1);
+        img = corpseImgCache.get(ck);
+        if (!img) {
+          const S = 72, [cc, gg] = canvas2d(S, S);
+          gg.translate(S / 2, S / 2); gg.rotate(target);
+          gg.drawImage(base.c, -base.a, -base.b, base.w, base.h);
+          img = { c: cc, w: S, h: S, a: S / 2, b: S / 2 };
+          corpseImgCache.set(ck, img);
+        }
       }
       corpses.push({ x: d.x, y: d.y, px: d.px, py: d.py, faction: d.faction, kind: d.kind, aim: d.aim, helmet: d.helmet, hat: d.hat, rot: target, age: 0, img });
       dying.splice(i, 1);
@@ -3414,7 +3670,7 @@ function step(dt) {
   for (let i = helmets.length - 1; i >= 0; i--) {
     const h = helmets[i];
     h.t += dt;
-    if (h.t > 30) { helmets.splice(i, 1); continue; } // knocked-off helmets fade after 30s
+    if (h.t > 10) { helmets.splice(i, 1); continue; } // fallen headgear despawns 10s after knock-off (fades over the last 2s)
     if (!h.onGround) {
       h.vy += 520 * dt; // gravity
       h.x += h.vx * dt; h.y += h.vy * dt; h.rot += h.vr * dt;
@@ -3423,13 +3679,17 @@ function step(dt) {
         if (Math.abs(h.vy) > 60) { // bounce with a dust kick
           h.vy *= -0.42; h.vx *= 0.55; h.vr *= 0.5;
           poof(h.x, h.gy, "rgba(150,130,90,0.8)", 3);
-        } else { h.onGround = true; h.vy = 0; }
+        } else { h.onGround = true; h.vy = 0; const exy0 = ejectBarr(h.x, h.gy, BARR_HW + 4); h.x = exy0[0]; }
       }
     } else { // roll to a stop
       h.x += h.vx * dt; h.vx *= 0.86; h.vr *= 0.86; h.rot += h.vr * dt;
-      // headgear never comes to rest on concrete either
-      const exy = ejectBarr(h.x, h.y, BARR_HW + 4);
-      h.x = exy[0]; h.y = exy[1];
+      // headgear never comes to rest on concrete either — but walls never
+      // move, so once the helmet is nearly stopped its last ejection stands
+      // and the full wall scan can rest (rolling helmets still eject).
+      if (Math.abs(h.vx) > 0.5 || Math.abs(h.vr) > 0.05) {
+        const exy = ejectBarr(h.x, h.y, BARR_HW + 4);
+        h.x = exy[0]; h.y = exy[1];
+      }
     }
   }
   if (helmets.length > 500) helmets.splice(0, helmets.length - 500);
@@ -3469,25 +3729,36 @@ function step(dt) {
   // winner (teams crown needs a real battle: 2+ factions on the field together
   // AND blood spilled — so a fresh single-faction placement never crowns
   // itself "winner"; an empty field resets the memory)
-  const c = countAlive();
+  // (folded in: the faction tally countAlive() used to take its own pass —
+  // the sweep below already visits every unit, so it counts hp>0 per faction
+  // the same way, NaN-coordinate zombies included, exactly as before)
+  const c = { red:0, blue:0, yellow:0, purple:0 };
+  // single removal sweep (was: two some()+filter passes plus an FFA-only
+  // filter): drop the hp<=0 (already counted as kills) and the non-finite
+  // (see the NaN note below) in one pass, remembering the FFA survivor.
+  let ffaFirst = null, ffaTwo = false, kept = 0;
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    if (u.hp > 0) c[u.faction]++;
+    if (u.hp > 0 && isFinite(u.x + u.y)) { units[kept++] = u; if (!ffaFirst) ffaFirst = u; else ffaTwo = true; }
+  }
+  if (kept !== units.length) units.length = kept;
   const aliveF = FACTION_KEYS.filter(f => c[f] > 0);
   if (aliveF.length >= 2) everMulti = true;
-  if (units.some(u => u.hp <= 0)) units = units.filter(u => u.hp > 0);
-  // NaN-coordinate sweep: a unit whose position went non-finite can never
-  // act again (every distance to or from it is NaN, so it never acquires,
-  // never hits, never separates — an invisible zombie that still eats a
-  // tally slot and a spawner cap). Coordinates are unrecoverable, so drop it.
-  // This should never fire — every motion write is guarded — so if it does,
-  // the fields above are the forensics for the real upstream bug.
-  if (units.some(u => !isFinite(u.x + u.y))) units = units.filter(u => isFinite(u.x + u.y));
+  // NaN-coordinate case (handled in the sweep above): a unit whose position
+  // went non-finite can never act again (every distance to or from it is NaN,
+  // so it never acquires, never hits, never separates — an invisible zombie
+  // that still eats a tally slot and a spawner cap). Coordinates are
+  // unrecoverable, so it was dropped. This should never fire — every motion
+  // write is guarded — so if units.length shrank here with no kills, the
+  // kill/thrash paths above are the forensics for the real upstream bug.
   if (c.red + c.blue + c.yellow + c.purple === 0) { everMulti = false; totalKills = 0; }
   if (mode === "teams") winner = (everMulti && totalKills > 0 && aliveF.length === 1 && units.length >= 1) ? aliveF[0] : null;
-  else {
-    const au = units.filter(u => u.hp > 0);
-    winner = (au.length === 1 && units.length >= 1) ? au[0].faction : null;
-  }
+  else winner = (!ffaTwo && ffaFirst && units.length >= 1) ? ffaFirst.faction : null;
 }
 function kill(u, bvx, bvy, b) {
+  // spawner census was snapshotted while this unit was alive — keep it exact
+  if (u.hp > 0 && u.sp) spCount.set(u.sp, (spCount.get(u.sp) || 1) - 1);
   if (u.hp > 0) u.hp = 0; // direct kills (bash) must not leave ghosts counted as alive
   totalKills++;
   const fall = Math.random() < 0.5 ? -1 : 1;
@@ -3542,14 +3813,8 @@ function buildSprites() {
   const r = 13, pad = 5;
   for (const f of [...FACTION_KEYS, "ffa"]) {
     const col = f === "ffa" ? FFA_GRAY : FACTIONS[f], dark = f === "ffa" ? FFA_DARK : DARK[f];
-    // Body sprite covers head (r=13) plus the green suit below (to y+20).
+    // Body sprite is just the head (r=13) — units are floating heads now, no torso.
     const S = (r + pad) * 2, SH = S + 22, [c, g] = canvas2d(S, SH), cx = r + pad, cy = r + pad;
-    g.fillStyle = HELMET_BASE;
-    g.beginPath(); g.ellipse(cx, cy + 12, 9.5, 8, 0, 0, 7); g.fill();
-    g.strokeStyle = HELMET_DARK; g.lineWidth = 3; g.lineCap = "round";
-    g.beginPath(); g.moveTo(cx - 8, cy + 13); g.lineTo(cx + 8, cy + 19); g.stroke();
-    g.strokeStyle = "rgba(0,0,0,0.45)"; g.lineWidth = 2.5;
-    g.beginPath(); g.moveTo(cx - 9, cy + 14); g.lineTo(cx + 9, cy + 14); g.stroke();
     const grd = g.createRadialGradient(cx - r * 0.3, cy - r * 0.35, r * 0.2, cx, cy, r);
     grd.addColorStop(0, shade(col, 38)); grd.addColorStop(1, col);
     g.fillStyle = grd;
@@ -3569,21 +3834,11 @@ function buildSprites() {
     g3.drawImage(c, 0, 0, S, SH);
     paintSniperHatOn(g3, cx, cy - r * 0.28, r);
     sniperSpr[f] = { c: c3, w: S, h: SH, a: r + pad, b: r + pad };
-    // corpse: suit + limbs + head (+helmet variant), blood pool drawn live
+    // corpse: bare head (+helmet variant), blood pool drawn live
     const cw = 48, ch = 50, cax = 24, cay = 20;
     const mkCorpse = (helm) => {
       const [cc, gg] = canvas2d(cw, ch);
       gg.translate(cax, cay);
-      gg.fillStyle = HELMET_BASE;
-      gg.beginPath(); gg.ellipse(0, 12, 9.5, 8, 0, 0, 7); gg.fill();
-      gg.strokeStyle = HELMET_DARK; gg.lineWidth = 3; gg.lineCap = "round";
-      gg.beginPath(); gg.moveTo(-8, 13); gg.lineTo(8, 19); gg.stroke();
-      gg.strokeStyle = "rgba(30,30,30,0.7)"; gg.lineWidth = 3;
-      gg.beginPath();
-      gg.moveTo(-6, 10); gg.lineTo(-14, 20);
-      gg.moveTo(6, 10); gg.lineTo(14, 20);
-      gg.moveTo(0, 8); gg.lineTo(11, 1);
-      gg.stroke();
       gg.fillStyle = col;
       gg.beginPath(); gg.arc(0, 0, r, 0, 7); gg.fill();
       gg.lineWidth = 2.5; gg.strokeStyle = dark;
@@ -3611,9 +3866,9 @@ function paintHelmetOn(g, x, y, r) {
   g.fillStyle = HELMET_DARK;
   g.beginPath(); g.ellipse(x, y, r + 1.5, 5, 0, 0, 7); g.fill();
   g.fillStyle = HELMET_BASE;
-  g.beginPath(); g.arc(x, y, r - 1.5, Math.PI, 0); g.closePath(); g.fill();
+  g.beginPath(); g.arc(x, y - 1.5, r - 0.5, Math.PI, 0); g.closePath(); g.fill();
   g.fillStyle = "rgba(255,255,255,0.3)";
-  g.beginPath(); g.arc(x - r * 0.3, y - r * 0.4, r * 0.22, Math.PI, 0); g.closePath(); g.fill();
+  g.beginPath(); g.arc(x - r * 0.3, y - 1.5 - r * 0.4, r * 0.22, Math.PI, 0); g.closePath(); g.fill();
 }
 function paintSniperHatOn(g, x, y, r) {
   // wide-brim camouflage hat: dark brim with camo blobs + low dome
@@ -3625,16 +3880,16 @@ function paintSniperHatOn(g, x, y, r) {
     g.beginPath(); g.arc(x + bx, y + by, br, 0, 7); g.fill();
   }
   g.fillStyle = "#46582a";
-  g.beginPath(); g.arc(x, y - 1, r - 3.5, Math.PI, 0); g.closePath(); g.fill();
+  g.beginPath(); g.arc(x, y - 3, r - 2.5, Math.PI, 0); g.closePath(); g.fill();
   g.fillStyle = "rgba(255,255,255,0.22)";
-  g.beginPath(); g.arc(x - r * 0.25, y - r * 0.35, r * 0.18, Math.PI, 0); g.closePath(); g.fill();
+  g.beginPath(); g.arc(x - r * 0.25, y - 2 - r * 0.35, r * 0.18, Math.PI, 0); g.closePath(); g.fill();
 }
 // 1:1 device-pixel blit (rounded dest = no resampling cost)
 function blit(s, x, y) {
   const dx = Math.round(x * DPR) / DPR, dy = Math.round(y * DPR) / DPR;
   ctx.drawImage(s.c, dx - s.a, dy - s.b, s.w, s.h);
 }
-// Per-frame soldier geometry, computed once per unit and shared by the
+// Per-frame gunner geometry, computed once per unit and shared by the
 // batched draw layers below (avoids recomputing aim/gun math per layer).
 function unitFrame(u) {
   const def = UNIT_DEFS[u.kind];
@@ -3699,8 +3954,8 @@ function unitFrame(u) {
   // stock butt (inside the body) + handguard/mag anchor points for the draw
   F.bx0 = gx - gdx * 5; F.by0 = gy - gdy * 5;
   F.sx = gx + gdx * glen * 0.34; F.sy = gy + gdy * glen * 0.34;
-  F.hx = gx + gdx * glen * 0.2; F.hy = gy + gdy * glen * 0.2;   // assault handguard start (soldiers)
-  F.qx = gx + gdx * glen * 0.65; F.qy = gy + gdy * glen * 0.65; // assault barrel start (soldiers)
+  F.hx = gx + gdx * glen * 0.2; F.hy = gy + gdy * glen * 0.2;   // assault handguard start (gunners)
+  F.qx = gx + gdx * glen * 0.65; F.qy = gy + gdy * glen * 0.65; // assault barrel start (gunners)
   F.mx = gx + gdx * glen * 0.4; F.my = gy + gdy * glen * 0.4;
   F.aim = u.aim; F.flash = u.flash;
   // flash anchor: where the shot actually left (the live muzzle may have
@@ -3758,7 +4013,7 @@ function renderSpawners() {
   ctx.textAlign = "left";
 }
 
-// All live soldiers, drawn in a handful of batched calls: one path per
+// All live gunners, drawn in a handful of batched calls: one path per
 // layer instead of a dozen canvas calls per unit.
 function renderUnits(sorted) {
   let i, u, F;
@@ -3789,12 +4044,12 @@ function renderUnits(sorted) {
     ctx.beginPath();
     for (i = 0; i < sorted.length; i++) {
       u = sorted[i]; F = u._f;
-      ctx.moveTo(u.x + F.r * 0.95, u.y + 24);
-      ctx.ellipse(u.x, u.y + 24, F.r * 0.95, F.r * 0.35, 0, 0, 7);
+      ctx.moveTo(u.x + F.r * 0.95, u.y + 15);
+      ctx.ellipse(u.x, u.y + 15, F.r * 0.95, F.r * 0.35, 0, 0, 7);
     }
     ctx.fill();
   }
-  // (legless soldiers: just the shadow on the ground)
+  // (legless gunners: just the shadow on the ground)
   // bodies: one blit each (suit + helmet baked in when worn); rollers spin
   for (i = 0; i < sorted.length; i++) {
     u = sorted[i]; F = u._f;
@@ -3808,7 +4063,7 @@ function renderUnits(sorted) {
       ctx.restore();
     } else blit(set, F.bx, F.by);
   }
-  // shouldered rifles, batched per barrel width (soldier 5 / sniper 3).
+  // shouldered rifles, batched per barrel width (gunner 5 / sniper 3).
   // Soldiers carry assault rifles: short wood butt + thick polymer
   // handguard + thin barrel with a top rail, angled box mag, pistol grip
   // and front sight post. Snipers keep the wood-stock hunting rifle.
@@ -3869,7 +4124,7 @@ function renderUnits(sorted) {
   ctx.beginPath();
   for (i = 0; i < sorted.length; i++) {
     u = sorted[i]; F = u._f;
-    if (F.rel >= 0 || u.kind !== "soldier") continue;
+    if (F.rel >= 0 || u.kind !== "gunner") continue;
     const flip = F.gdx < 0 ? -1 : 1;
     ctx.moveTo(F.mx, F.my); ctx.lineTo(F.mx + F.gdx * 4 - F.gdy * 7 * flip, F.my + F.gdy * 4 + F.gdx * 7 * flip);
   }
@@ -3877,19 +4132,19 @@ function renderUnits(sorted) {
   ctx.beginPath();
   for (i = 0; i < sorted.length; i++) {
     u = sorted[i]; F = u._f;
-    if (F.rel >= 0 || u.kind === "soldier") continue;
+    if (F.rel >= 0 || u.kind === "gunner") continue;
     const flip = F.gdx < 0 ? -1 : 1;
     ctx.moveTo(F.mx, F.my); ctx.lineTo(F.mx - F.gdy * 6 * flip, F.my + F.gdx * 6 * flip);
   }
   ctx.stroke();
-  // assault furniture (soldiers only): pistol grip under the trigger and a
+  // assault furniture (gunners only): pistol grip under the trigger and a
   // front sight post near the muzzle. Skipped in LOD with the other detail.
   if (!Q) {
     ctx.strokeStyle = "#1a1a1a"; ctx.lineWidth = 4.5; ctx.lineCap = "butt";
     ctx.beginPath();
     for (i = 0; i < sorted.length; i++) {
       u = sorted[i]; F = u._f;
-      if (u.kind !== "soldier") continue;
+      if (u.kind !== "gunner") continue;
       const flip = F.gdx < 0 ? -1 : 1;
       ctx.moveTo(F.rx, F.ry); ctx.lineTo(F.rx - F.gdx * 3 - F.gdy * 6 * flip, F.ry - F.gdy * 3 + F.gdx * 6 * flip);
     }
@@ -3898,7 +4153,7 @@ function renderUnits(sorted) {
     ctx.beginPath();
     for (i = 0; i < sorted.length; i++) {
       u = sorted[i]; F = u._f;
-      if (u.kind !== "soldier") continue;
+      if (u.kind !== "gunner") continue;
       const flip = F.gdx < 0 ? -1 : 1;
       ctx.moveTo(F.tx - F.gdx * 4, F.ty - F.gdy * 4);
       ctx.lineTo(F.tx - F.gdx * 4 + F.gdy * 5 * flip, F.ty - F.gdy * 4 - F.gdx * 5 * flip);
@@ -3998,21 +4253,21 @@ function renderUnits(sorted) {
   }
   for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (u._f.drawExtra) u._f.drawExtra(u, ctx); }
 }
-  // (live-soldier vector layers moved into renderUnits above)
+  // (live-gunner vector layers moved into renderUnits above)
 // Static corpses: blood pools in one fill, bodies as rotated sprite blits
 // (suit + limbs + head baked per faction/helmet variant).
 function renderCorpses() {
   let i, c;
   // Culled to the viewport (pools + bodies fit in 60px).
   const vx0 = cam.x - 60, vy0 = cam.y - 60, vx1 = cam.x + W / zoom + 60, vy1 = cam.y + H / zoom + 60;
-  // blood pools fade fast: full strength to 10s, gone by 12s — long before
+  // blood pools fade fast: full strength to 6s, gone by 8s — long before
   // the body itself fades (25-30s)
   ctx.fillStyle = "rgba(140,20,20,0.5)";
   ctx.beginPath();
   for (i = 0; i < corpses.length; i++) {
     c = corpses[i];
     if (c.px < vx0 || c.px > vx1 || c.py < vy0 || c.py > vy1) continue;
-    if (c.age > 10) continue; // older pools drawn individually below
+    if (c.age > 6) continue; // older pools drawn individually below
     ctx.moveTo(c.px + 14, c.py + 6);
     ctx.ellipse(c.px, c.py + 6, 14, 9, 0, 0, 7);
   }
@@ -4021,8 +4276,8 @@ function renderCorpses() {
     c = corpses[i];
     // pool sits at (px,py) but the body at (x,y): draw if either is visible
     if ((c.px < vx0 || c.px > vx1 || c.py < vy0 || c.py > vy1) && (c.x < vx0 || c.x > vx1 || c.y < vy0 || c.y > vy1)) continue;
-    if (c.age > 10 && c.age <= 12) { // pool fading out ahead of the body
-      ctx.globalAlpha = Math.max(0, 1 - (c.age - 10) / 2);
+    if (c.age > 6 && c.age <= 8) { // pool fading out ahead of the body
+      ctx.globalAlpha = Math.max(0, 1 - (c.age - 6) / 2);
       ctx.fillStyle = "rgba(140,20,20,0.5)";
       ctx.beginPath(); ctx.ellipse(c.px, c.py + 6, 14, 9, 0, 0, 7); ctx.fill();
       ctx.globalAlpha = 1;
@@ -4087,7 +4342,7 @@ function render() {
   for (const h of helmets) {
     if (h.x < ex0 || h.x > ex1 || h.y < ey0 || h.y > ey1) continue;
     if (!helmetSpr) break;
-    ctx.globalAlpha = h.t > 25 ? Math.max(0, 1 - (h.t - 25) / 5) : 1;
+    ctx.globalAlpha = h.t > 8 ? Math.max(0, 1 - (h.t - 8) / 2) : 1;
     ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(h.rot);
     const hs = (h.hat ? (hatSpr || helmetSpr) : helmetSpr);
     ctx.drawImage(hs.c, -hs.a, -hs.b, hs.w, hs.h);
@@ -4188,7 +4443,7 @@ function drawGhost() {
   // already refuses there, so the cursor warns before the click.
   const atCap = brush.unit === "tree" ? capWood >= MAX_TREES
     : brush.unit === "barricade" ? capBarr >= BARR_MAX
-    : (UNIT_DEFS[brush.unit] ? units.length >= MAX_UNITS : false);
+    : (UNIT_DEFS[brush.unit] ? factionCount(brush.faction) >= MAX_UNITS : false);
   const RC = "#ff5b4d"; // cap red (replaces the ghost's white accents)
   octx.setTransform(DPR * zoom, 0, 0, DPR * zoom, -cam.x * DPR * zoom, -cam.y * DPR * zoom);
   {
@@ -4268,7 +4523,7 @@ let last = performance.now(), barT = 0;
 document.addEventListener("visibilitychange", () => { if (!document.hidden) last = performance.now(); });
 let gen = 0, stallCount = 0, lastTickSeen = -1;
 const fpsEl = document.getElementById("fps");
-let fpsFrames = 0, fpsTime = 0, fpsLow = false; // half-second average; red below 20, recovers at 25
+let fpsFrames = 0, fpsTime = 0, fpsBand = 0; // half-second average: 1 green (>60), 2 yellow (<30), 3 red (<10), else 0; edges have +/-2 hysteresis so a straddling rate doesn't flicker
 function loop(now) {
   if (loop._g !== gen) return; // stale instance from an older start
   window.__tick = (window.__tick || 0) + 1;
@@ -4280,8 +4535,16 @@ function loop(now) {
       const f = Math.round(fpsFrames / fpsTime);
       fpsFrames = 0; fpsTime = 0;
       if (fpsEl._v !== f) { fpsEl._v = f; fpsEl.textContent = f; }
-      const low = fpsLow ? f < 25 : f < 20;
-      if (low !== fpsLow) { fpsLow = low; fpsEl.classList.toggle("low", low); }
+      let b = f > 60 ? 1 : f < 10 ? 3 : f < 30 ? 2 : 0;
+      if (fpsBand === 1 && f <= 60 && f > 58) b = 1; // stay green until clearly under
+      else if (fpsBand === 2 && b === 0 && f < 32) b = 2; // stay yellow until clearly over 30
+      else if (fpsBand === 3 && f >= 10 && f < 12) b = 3; // stay red until clearly over 10
+      if (b !== fpsBand) {
+        fpsBand = b;
+        fpsEl.classList.toggle("good", b === 1);
+        fpsEl.classList.toggle("mid", b === 2);
+        fpsEl.classList.toggle("low", b === 3);
+      }
     }
   }
   if (playing) {
@@ -4390,8 +4653,8 @@ function demo() {
       spawn(k, f, x0 + Math.random() * 130, FH * 0.22 + (i / 12) * FH * 0.56 + (Math.random()*30-15));
     }
   };
-  rows("red", FW * 0.12, ["soldier", "soldier", "sniper"]);
-  rows("blue", FW * 0.82, ["soldier", "soldier", "sniper"]);
+  rows("red", FW * 0.12, ["gunner", "gunner", "sniper"]);
+  rows("blue", FW * 0.82, ["gunner", "gunner", "sniper"]);
 }
 buildFactionCache();
 buildSprites();
