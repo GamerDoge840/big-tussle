@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Battle Sim</title>
+<title>Big Tussle</title>
 </head>
 <body>
-<!-- portable standalone build of the battle sim, generated 2026-11-19 from the editor index.html — self-contained, no engine needed -->
+<!-- portable standalone build of Big Tussle, generated 2026-11-24 from the editor index.html — self-contained, no engine needed -->
 <style>
   /* Dark-styled UI (bars/dock are near-black pills), so declare it: browsers
      with auto-dark / night-mode content features then leave our pixels alone
@@ -121,6 +121,24 @@
   .tally.win { outline:2px solid gold; }
   #cv { position:fixed; inset:0; width:100vw; height:100vh; display:block; touch-action:none; cursor:crosshair; }
   #cv:focus { outline:none; }
+  /* FPS readout: large pill pinned to the top-right, red when very low */
+  #fps {
+    position:fixed; top:8px; right:10px; z-index:10; pointer-events:none;
+    background:rgba(20,24,18,.82); border:1px solid rgba(255,255,255,.12);
+    border-radius:14px; padding:6px 14px; min-width:64px; text-align:center;
+    font-size:26px; font-weight:800; line-height:1.1; color:#fff;
+    font-variant-numeric:tabular-nums;
+  }
+  #fps.low { color:#ff6b5e; border-color:rgba(255,90,80,.55); }
+  @media (max-width:640px) { #fps { font-size:20px; padding:5px 10px; min-width:52px; } }
+  /* version tag: small pill pinned to the top-left (text set from GAME_VERSION) */
+  #ver {
+    position:fixed; top:8px; left:10px; z-index:10; pointer-events:none;
+    background:rgba(20,24,18,.82); border:1px solid rgba(255,255,255,.12);
+    border-radius:14px; padding:6px 12px;
+    font-size:13px; font-weight:800; letter-spacing:.04em; line-height:1.2; color:#cfd6c9;
+    font-variant-numeric:tabular-nums;
+  }
   /* ghost-cursor overlay: its own canvas so the placement preview redraws at
      full input rate even when the world frame is heavy (fully zoomed out) */
   #ov { position:fixed; inset:0; width:100vw; height:100vh; display:block; touch-action:none; pointer-events:none; z-index:5; }
@@ -128,6 +146,8 @@
 
 <div id="topWrap"><div id="bar"></div></div>
 <div id="bbar"></div>
+<div id="ver">v0.0.4</div>
+<div id="fps">60</div>
 <canvas id="cv" tabindex="0"></canvas>
 <canvas id="ov"></canvas>
 <div id="spanel" hidden>
@@ -148,6 +168,10 @@
 
 <script>
 "use strict";
+// GAME_VERSION is the single source of truth for the version tag (#ver,
+// top-left). It is bumped ONLY when the user explicitly says so — never
+// as part of any other change. (v0.0.4: bumped by explicit user order.)
+const GAME_VERSION = "v0.0.4";
 /* ============================================================
    BATTLE SIM — add a unit by adding one entry to UNIT_DEFS.
    Required fields: hp, speed, range, interval, damage, bulletSpeed,
@@ -186,6 +210,7 @@ function queueGhost() {
   requestAnimationFrame(drawGhost);
 }
 const bar = document.getElementById("bar");
+document.getElementById("ver").textContent = GAME_VERSION;
 const bbar = document.getElementById("bbar");
 function evPos(e) { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 function toWorld(p) { return { x: p.x / zoom + cam.x, y: p.y / zoom + cam.y }; }
@@ -201,6 +226,7 @@ function zoomAt(sx, sy, f) {
   const z0 = zoom;
   zoom = Math.max(zoomMin(), Math.min(ZOOM_MAX, z0 * f));
   if (zoom === z0) return;
+  lastZoomT = performance.now(); // composite rebuild waits for the gesture to settle (see groundLayers)
   const wx = cam.x + sx / z0, wy = cam.y + sy / z0;
   cam.x = wx - sx / zoom; cam.y = wy - sy / zoom;
   clampCam();
@@ -228,21 +254,16 @@ function attachInput() {
     ptrs.set(e.pointerId, { x: p.x, y: p.y });
     if (ptrs.size === 2) { // second finger lands: pan/zoom, never paint/erase
       painting = false; erasing = false; panDrag = null; rDown = null;
-      // a pinch that starts before the first finger even moves takes back
-      // the tap it interrupted — otherwise every pinch-zoom drops a stray
-      // unit (or spawner/tree/wall) under the first finger. A stroke that
-      // already dragged keeps everything it laid down.
-      if (strokeNew && !strokeMoved) {
-        for (const rec of strokeNew) {
-          const i = rec.arr.indexOf(rec.o);
-          if (i >= 0) rec.arr.splice(i, 1);
-        }
-        if (strokeNew.length) refreshBar();
-      }
-      strokeNew = null;
+      // do NOT take back the first finger's tap yet: rapid two-finger
+      // tapping lands a second finger without ever pinching, and wiping here
+      // deletes placed units the user meant to keep. The take-back happens
+      // only once this gesture actually moves (see pointermove) — a tap-tap
+      // keeps everything, a real pinch still takes back the stray tap.
       const q = [...ptrs.values()];
       pinch = { mx: (q[0].x + q[1].x) / 2, my: (q[0].y + q[1].y) / 2,
-                d: Math.hypot(q[0].x - q[1].x, q[0].y - q[1].y) };
+                d: Math.hypot(q[0].x - q[1].x, q[0].y - q[1].y),
+                x0: (q[0].x + q[1].x) / 2, y0: (q[0].y + q[1].y) / 2,
+                d0: Math.hypot(q[0].x - q[1].x, q[0].y - q[1].y), tookBack: false };
       try { cv.setPointerCapture(e.pointerId); } catch (_) {}
       return;
     }
@@ -267,11 +288,10 @@ function attachInput() {
       else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; const sp = placeSpawner(w.x, w.y); if (sp && strokeNew) strokeNew.push({ arr: spawners, o: sp }); if (!sp) poof(w.x, w.y, "#999999", 4); painting = true; }
     }
     else if (brush.tab === "objects") {
-      // objects mode: tapping a placed barricade selects it (scroll rotates it),
-      // tapping empty ground plants the picked object (dragging lays a trail)
-    const hitB = barricadeAt(w.x, w.y);
-    if (hitB) { selectBarrPicked(hitB); painting = false; strokeNew = null; queueGhost(); }
-      else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; paintAt(w.x, w.y); }
+      // objects mode: tapping/dragging plants the picked object (a tap on an
+      // existing wall just refuses on spacing — placed walls can't be
+      // selected or rotated; the wheel spins the placement ghost instead)
+      { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; paintAt(w.x, w.y); }
     }
     else { strokeNew = []; strokeMoved = false; strokeSX = p.x; strokeSY = p.y; painting = true; paintAt(w.x, w.y); }
     mouse.x = p.x; mouse.y = p.y; mouse.down = true;
@@ -297,10 +317,30 @@ function attachInput() {
       const q = [...ptrs.values()];
       const mx = (q[0].x + q[1].x) / 2, my = (q[0].y + q[1].y) / 2;
       const nd = Math.hypot(q[0].x - q[1].x, q[0].y - q[1].y);
+      // the deferred take-back: this gesture really is a pinch (moved), so
+      // the tap it interrupted comes back out. Tap-taps never move and keep
+      // everything. Look units/spawners/trees up in the LIVE arrays — a kill
+      // sweep may have re-filtered `units` since the stroke recorded them.
+      if (!pinch.tookBack && strokeNew && !strokeMoved &&
+          (Math.hypot(mx - pinch.x0, my - pinch.y0) > 8 ||
+           (pinch.d0 > 0 && nd > 0 && Math.abs(nd / pinch.d0 - 1) > 0.03))) {
+        pinch.tookBack = true;
+        for (const rec of strokeNew) {
+          const o = rec.o || rec;
+          let i = units.indexOf(o);
+          if (i >= 0) { units.splice(i, 1); continue; }
+          i = trees.indexOf(o);
+          if (i >= 0) { trees.splice(i, 1); bumpTrees(); continue; }
+          i = spawners.indexOf(o);
+          if (i >= 0) spawners.splice(i, 1);
+        }
+        if (strokeNew.length) refreshBar();
+        strokeNew = null;
+      }
       const dxm = mx - pinch.mx, dym = my - pinch.my;
       if (pinch.d > 0 && nd > 0) zoomAt(mx, my, nd / pinch.d);
       cam.x -= dxm / zoom; cam.y -= dym / zoom; clampCam();
-      pinch = { mx, my, d: nd };
+      pinch = { mx, my, d: nd, x0: pinch.x0, y0: pinch.y0, d0: pinch.d0, tookBack: pinch.tookBack };
       queueGhost();
       return;
     }
@@ -338,16 +378,10 @@ function attachInput() {
       }
     }
     e.preventDefault();
-    // barricade rotation rides the wheel: a selected wall spins in place,
-    // otherwise the placement ghost spins while the barricade brush is
-    // picked. Anything else zooms around the cursor as before.
+    // the placement ghost spins on the wheel while the barricade brush is
+    // picked (placed walls can't be rotated). Anything else zooms around
+    // the cursor as before.
     const wd = (e.deltaMode ? e.deltaY * 16 : e.deltaY) || 0; // lines -> px
-    if (selBarr && trees.includes(selBarr)) {
-      selBarr.dir = ((((selBarr.dir || 0) + (wd < 0 ? -1 : 1)) % 8) + 8) % 8;
-      pendingBarrDir = selBarr.dir; // placements inherit the spun wall
-      queueGhost();
-      return;
-    }
     if (brush.unit === "barricade") {
       pendingBarrDir = ((((pendingBarrDir | 0) + (wd < 0 ? -1 : 1)) % 8) + 8) % 8;
       queueGhost();
@@ -382,19 +416,18 @@ function bindCanvas() {
 
 // ---------- state ----------
 let units = [], bullets = [], parts = [], corpses = [], helmets = [], holes = [], dying = [];
-let holeCv = null, holeCtx = null;
 let shotsFired = 0, fleshHits = 0; // lifetime diagnostic counters for probes and AI tuning (reset on reload)
 let uid = 1;
 let brush = { unit:"soldier", tab:"soldiers", faction:"red", eraser:false, spawner:false }; // spawner: placement mode that drops a unit-spawner (kind/faction captured from the selection); never offered for trees
 let lastSoldierUnit = "soldier"; // soldiers-tab pick remembered across trips to Objects (so placing a wall never resets sniper -> soldier)
 let trees = []; // static objects: trees {x,y,r,seed,chip,scars[]} and concrete barricades {kind:"barr",x,y,dir} — bullets chip bark / chip concrete, nothing ever falls
 const TREE_R = 45, TRUNK_R = 14, MAX_TREES = 400;
-const BARR_HALF = 24, BARR_HW = 8; // barricade: a 48-long, 16-thick concrete jersey wall, rotatable in 8 directions
+const TREE_HP = 300; // dormant health (no destruction yet — reserved for future use)
+const BARR_HALF = 24, BARR_HW = 8; // barricade: a 48-long, 16-thick concrete jersey wall, angled in 8 directions at placement
 let barkBits = []; // fallen bark chips on the ground (fade after 10s)
 let leafBits = []; // fallen leaves shaken out of the canopy (fade after 10s)
 let concBits = []; // concrete chips around barricade bases (fade after 5s)
-let selBarr = null; // selected barricade (scroll rotates it through 8 directions)
-let pendingBarrDir = 0; // placement direction for the next barricade
+let pendingBarrDir = 0; // placement direction for the next barricade (wheel spins the ghost)
 let spawners = [], spawnerId = 1, selSp = null; // placed unit-spawners: per-spawner kind/faction/cap/cooldown
 let pendingSp = { maxUnits: 4, cd: 5, spawnR: 34 }; // next-spawner defaults, set in the pre-placement window
 let spTabBtn = null; // bottom-attached spawner tab
@@ -410,10 +443,10 @@ let lodSimple = false; // heavy-battle LOD: >256 alive drops the subtlest
 // gun/hand detail (barrel core line, round hands); <192 restores it
 let painting = false, erasing = false;
 let mouse = { x:-999, y:-999, down:false };
-let bgCv = null, W = 0, H = 0, DPR = 1;
+let W = 0, H = 0, DPR = 1;
 let FW = 0, FH = 0;       // world (field) size: a bit larger than the viewport
 let cam = { x: 0, y: 0 }; // camera: top-left of the viewport in world coords
-const WORLD_SCALE = 1.875; // world = viewport x 1.875 on first layout (25% more room than the old 1.5x)
+const WORLD_SCALE = 2.8125; // world = viewport x 2.8125 (+50% over the old 1.875x: room for extremely massive units)
 const PAN_SPEED = 650;    // WASD/drag pan speed, px/s
 const ZOOM_MAX = 2;       // zooming in stops here (no pixel-peeping the sprites)
 let zoom = 1;             // camera zoom: 1 = normal; smaller = zoomed out
@@ -452,7 +485,7 @@ function buildBar() {
   for (const [key, label] of [["soldiers", "Soldiers"], ["objects", "Objects"]]) {
     const tb = document.createElement("button");
     tb.className = "tab"; tb.textContent = label;
-    tb.addEventListener("click", e => { e.stopPropagation(); brush.tab = key; brush.eraser = false; selBarr = null; if (key === "objects") { if (UNIT_DEFS[brush.unit]) lastSoldierUnit = brush.unit; brush.unit = "tree"; } else brush.unit = lastSoldierUnit; if (key === "objects") { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } refreshBar(); tb.blur(); });
+    tb.addEventListener("click", e => { e.stopPropagation(); brush.tab = key; brush.eraser = false; if (key === "objects") { if (UNIT_DEFS[brush.unit]) lastSoldierUnit = brush.unit; brush.unit = "tree"; } else brush.unit = lastSoldierUnit; if (key === "objects") { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } refreshBar(); tb.blur(); });
     btabBtns[key] = tb; tabs.appendChild(tb);
   }
   bbar.appendChild(tabs);
@@ -469,7 +502,7 @@ function buildBar() {
   br.dataset.u = "barricade"; unitBtns.barricade = br; btabObj.appendChild(br);
   bbar.appendChild(btabObj);
   bbar.appendChild(sep());
-  const er = btn(`<span class="uname">eraser</span>`, "eraser", () => { brush.eraser = !brush.eraser; if (brush.eraser) { brush.spawner = false; selSp = null; selBarr = null; hideSpanel(); hideSppre(); } });
+  const er = btn(`<span class="uname">eraser</span>`, "eraser", () => { brush.eraser = !brush.eraser; if (brush.eraser) { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } });
   er.dataset.er = "1"; unitBtns.__eraser = er; bbar.appendChild(er);
   // spawner tab attached to the bottom of the unit menu (soldiers only —
   // objects can't have spawners): toggles placement mode and opens the
@@ -482,8 +515,8 @@ function buildBar() {
     brush.spawner = !brush.spawner; brush.eraser = false;
     if (brush.spawner) {
       brush.tab = "soldiers"; if (!UNIT_DEFS[brush.unit]) brush.unit = "soldier";
-      selSp = null; selBarr = null; hideSpanel(); showSppre();
-    } else { selSp = null; selBarr = null; hideSpanel(); hideSppre(); }
+      selSp = null; hideSpanel(); showSppre();
+    } else { selSp = null; hideSpanel(); hideSppre(); }
     refreshBar(); spTabBtn.blur();
   });
   spw.appendChild(spTabBtn); bbar.appendChild(spw);
@@ -590,15 +623,28 @@ function countAlive() {
 function resize() {
   DPR = Math.min(2, window.devicePixelRatio || 1);
   W = window.innerWidth; H = window.innerHeight;
-  // the field is a fixed world always at least 1.5x the viewport, so there
-  // is always room to pan — including fullscreen, where the viewport can
-  // outgrow the world the editor pane started with. It only ever grows
-  // (never below the view), so resizes never strand units off-field or
-  // shrink the world under the camera.
-  if (!FW || !FH) { FW = Math.round(W * WORLD_SCALE); FH = Math.round(H * WORLD_SCALE); }
-  else { FW = Math.max(FW, Math.round(W * WORLD_SCALE)); FH = Math.max(FH, Math.round(H * WORLD_SCALE)); }
+  // the field tracks the viewport (always room to pan, including
+  // fullscreen, where the viewport can outgrow the world the editor pane
+  // started with) but it also SHRINKS back when the viewport does — a
+  // fullscreen visit used to ratchet FW/FH up forever, leaving giant
+  // background canvases behind on the small viewport (permanent lag).
+  // Shrinking never strands content: the field keeps every unit, tree
+  // and spawner inside, shrinking only down to the content bounds.
+  const wantW = Math.round(W * WORLD_SCALE), wantH = Math.round(H * WORLD_SCALE);
+  let needW = 0, needH = 0;
+  for (const u of units) { if (u.x + 30 > needW) needW = u.x + 30; if (u.y + 30 > needH) needH = u.y + 30; }
+  for (const t of trees) {
+    const m = t.kind === "barr" ? 30 : TREE_R;
+    if (t.x + m > needW) needW = t.x + m; if (t.y + m > needH) needH = t.y + m;
+  }
+  for (const s of spawners) { if (s.x + SP_R > needW) needW = s.x + SP_R; if (s.y + SP_R > needH) needH = s.y + SP_R; }
+  FW = Math.ceil(Math.max(wantW, needW)); FH = Math.ceil(Math.max(wantH, needH));
   // keep the zoom inside its range (a narrower viewport raises the fit-whole floor)
-  zoom = Math.max(zoomMin(), Math.min(ZOOM_MAX, zoom));
+  {
+    const z0 = zoom;
+    zoom = Math.max(zoomMin(), Math.min(ZOOM_MAX, zoom));
+    if (zoom !== z0) lastZoomT = performance.now(); // settled composite rebuilds (see groundLayers)
+  }
   clampCam();
   cv.width = Math.floor(W * DPR); cv.height = Math.floor(H * DPR);
   sizeOverlay();
@@ -606,8 +652,7 @@ function resize() {
   // all sprite blits are pre-built 1:1 at device resolution, so disabling
   // resampling costs nothing visually but unlocks the fast blit path
   ctx.imageSmoothingEnabled = false;
-  renderBackground();
-  resetHoleLayer();
+  bakeBackground();
   buildSprites(); // device-pixel-exact sprites for this DPR
 }
 window.addEventListener("resize", resize);
@@ -624,33 +669,121 @@ if (window.ResizeObserver) {
     }).observe(document.documentElement);
   } catch (_) {}
 }
-// Static background is pre-rendered once per resize and blitted each frame.
-// (CanvasPattern fills paint black on some GPUs, so no createPattern here.)
-function renderBackground() {
-  bgCv = document.createElement("canvas");
-  bgCv.width = Math.max(1, Math.floor(FW * DPR)); bgCv.height = Math.max(1, Math.floor(FH * DPR));
-  const b = bgCv.getContext("2d");
-  b.setTransform(DPR, 0, 0, DPR, 0, 0);
-  b.fillStyle = "#63944c"; b.fillRect(0, 0, FW, FH);
-  const n = Math.floor(FW * FH / 380);
+// Static background is baked once per resize. Fast path: one field-size
+// composite (1 blit/frame). Fallback: small grass tiles (many blits/frame,
+// same art). The composite is kept only when its backing store is alive
+// (verified by a 1px readback right after the bake); weak GPUs that refuse
+// big canvases fall back to tiles, whose size is the largest alive probe
+// among 896/512/256/112 device px. (CanvasPattern fills paint black on
+// some GPUs, so no createPattern here.)
+let grassTiles = [];
+let bgCv = null; // single-composite fast path (null = tile fallback active)
+let TILE_DEV = 112; // tile backing footprint (device px) when the fallback is active
+function canvasBackingAlive(c) {
+  try {
+    const g = c.getContext("2d");
+    if (!g) return false;
+    const d = g.getImageData(0, 0, 1, 1);
+    return !!(d && d.data && d.data[3] !== 0);
+  } catch (_) { return false; }
+}
+// the composite is only the fast path if big canvases also BLIT into a
+// screen-sized target (a live backing store alone still reads black on
+// GPUs that refuse the blit — that exact gap caused the §23 dark field).
+// Probe the real operation: 1:1 the composite's top-left into a canvas
+// the size of the screen backing and read one pixel back. Greenish +
+// opaque = the blit path works on this GPU.
+function compositeBlitsAlive(c) {
+  let t = null;
+  try {
+    t = document.createElement("canvas");
+    t.width = Math.max(1, Math.min(c.width, Math.round(W * DPR)));
+    t.height = Math.max(1, Math.min(c.height, Math.round(H * DPR)));
+    const g = t.getContext("2d"); g.imageSmoothingEnabled = false;
+    g.drawImage(c, 0, 0, t.width, t.height, 0, 0, t.width, t.height);
+    const d = g.getImageData(t.width >> 1, t.height >> 1, 1, 1).data;
+    return d[3] !== 0 && d[1] >= d[0] && d[1] >= d[2];
+  } catch (_) { return false; }
+  finally { if (t) { t.width = 0; t.height = 0; } }
+}
+function probeSizeAlive(devW, devH) {  let c = null;
+  try {
+    c = document.createElement("canvas");
+    c.width = Math.max(1, devW); c.height = Math.max(1, devH);
+    const g = c.getContext("2d");
+    if (!g) return false;
+    g.fillStyle = "#63944c"; g.fillRect(0, 0, 1, 1);
+    const d = g.getImageData(0, 0, 1, 1);
+    return !!(d && d.data && d.data[3] !== 0);
+  } catch (_) { return false; }
+  finally { if (c) { c.width = 0; c.height = 0; } }
+}
+function paintGrassInto(b, rx0, ry0, rx1, ry1) {
+  b.fillStyle = "#63944c"; b.fillRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
+  const area = (rx1 - rx0) * (ry1 - ry0);
+  const n = Math.floor(area / 380);
   for (let i = 0; i < n; i++) {
-    const x = Math.random() * FW, y = Math.random() * FH, r = Math.random() * 2 + 0.4;
+    const x = rx0 + Math.random() * (rx1 - rx0), y = ry0 + Math.random() * (ry1 - ry0), r = Math.random() * 2 + 0.4;
     b.fillStyle = Math.random() < 0.5 ? "rgba(0,0,0,0.05)" : "rgba(255,255,255,0.05)";
     b.beginPath(); b.arc(x, y, r, 0, 7); b.fill();
   }
-  const nb = Math.floor(FW * FH / 9000);
+  const nb = Math.floor(area / 9000);
   for (let i = 0; i < nb; i++) {
-    const x = Math.random() * FW, y = Math.random() * FH;
+    const x = rx0 + Math.random() * (rx1 - rx0), y = ry0 + Math.random() * (ry1 - ry0);
     b.strokeStyle = "rgba(30,60,20,0.25)"; b.lineWidth = 1.4;
     b.beginPath(); b.moveTo(x, y); b.lineTo(x + 2, y - 5); b.moveTo(x + 3, y); b.lineTo(x + 5, y - 4); b.stroke();
   }
   // no vignette: the field must read as one even color edge to edge, so the
   // background is just the flat fill plus the speckle above.
 }
+function bakeTiles() {
+  grassTiles = [];
+  if (!(TILE_DEV > 0)) TILE_DEV = 112; // defensive: never divide by zero if called directly
+  if (!(FW > 0 && FH > 0)) return;
+  const tw = TILE_DEV / DPR, th = TILE_DEV / DPR, M = 1; // 1 world-px overlap so smoothed blits never seam
+  const nx = Math.max(1, Math.ceil(FW / tw)), ny = Math.max(1, Math.ceil(FH / th));
+  for (let ix = 0; ix < nx; ix++) for (let iy = 0; iy < ny; iy++) {
+    const x0 = ix * tw, y0 = iy * th;
+    const rx0 = Math.max(0, x0 - M), ry0 = Math.max(0, y0 - M);
+    const rx1 = Math.min(FW, x0 + tw + M), ry1 = Math.min(FH, y0 + th + M);
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round((rx1 - rx0) * DPR)); c.height = Math.max(1, Math.round((ry1 - ry0) * DPR));
+    const b = c.getContext("2d");
+    b.setTransform(DPR, 0, 0, DPR, -rx0 * DPR, -ry0 * DPR);
+    paintGrassInto(b, rx0, ry0, rx1, ry1);
+    grassTiles.push({ x: rx0, y: ry0, w: rx1 - rx0, h: ry1 - ry0, c });
+  }
+}
+function bakeBackground() {
+  grassTiles = []; bgCv = null;
+  if (!(FW > 0 && FH > 0)) return;
+  // the composite is screen-blitted (constant per-frame cost at any field
+  // size) but its bake is field-sized: cap the backing at 24M px (~96MB)
+  // so huge fields on hidpi screens fall through to exact-res tiles
+  // instead of parking a giant allocation on a marginal GPU
+  if (FW * DPR * FH * DPR <= 24000000) {
+    try {
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(FW * DPR)); c.height = Math.max(1, Math.round(FH * DPR));
+      const b = c.getContext("2d");
+      b.setTransform(DPR, 0, 0, DPR, 0, 0);
+      paintGrassInto(b, 0, 0, FW, FH);
+      if (canvasBackingAlive(c) && compositeBlitsAlive(c)) { bgCv = c; TILE_DEV = 0; return; }
+      c.width = 0; c.height = 0;
+    } catch (_) { bgCv = null; }
+  }
+  TILE_DEV = 112;
+  for (const cand of [2048, 1024, 896, 512, 256, 112]) {
+    let ok = false;
+    try { ok = probeSizeAlive(cand, cand); } catch (_) { ok = false; }
+    if (ok) { TILE_DEV = cand; break; }
+  }
+  bakeTiles();
+}
 const HOLE_LIFE = 10, HOLE_FADE = 2; // holes vanish after 10s, fading over the last 2s
 const HOLE_SOLID = HOLE_LIFE - HOLE_FADE;
 const HOLE_VARS = 4; // baked crater variants (per-hole look, zero per-frame cost)
-let holeSprs = [], holeNeedRebuild = false, holeRebuildCd = 0;
+let holeSprs = [];
 function buildHoleSprites() {
   holeSprs = [];
   const r = 4, ext = 13;
@@ -681,28 +814,10 @@ function drawHoleOn(c, h) {
   const s = holeSprs[(h.var | 0) % HOLE_VARS] || holeSprs[0];
   if (s) c.drawImage(s.c, h.x - s.a, h.y - s.b, s.w, s.h);
 }
-function resetHoleLayer() {
-  // reuse the canvas (a fresh full-field alloc every expiry wave was GC
-  // churn on top of the restamp cost); only realloc when the size changed
-  const w = Math.max(1, Math.floor(FW * DPR)), h = Math.max(1, Math.floor(FH * DPR));
-  if (!holeCv || holeCv.width !== w || holeCv.height !== h) {
-    holeCv = document.createElement("canvas");
-    holeCv.width = w; holeCv.height = h;
-    holeCtx = holeCv.getContext("2d");
-  }
-  holeCtx.setTransform(1, 0, 0, 1, 0, 0);
-  holeCtx.clearRect(0, 0, holeCv.width, holeCv.height);
-  holeCtx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  // Only solid holes are baked; fading ones are drawn per-frame with alpha.
-  for (const h of holes) if ((h.age || 0) <= HOLE_SOLID) drawHoleOn(holeCtx, h);
-}
 function addHole(x, y) {
-  const r = 4;
-  const h = { x, y, r, age: 0, var: (Math.random() * HOLE_VARS) | 0 };
-  holes.push(h);
-  if (!holeCtx) return;
-  if (holes.length > 2500) { holes.shift(); holeNeedRebuild = true; }
-  else drawHoleOn(holeCtx, h);
+  const h = { x, y, r: 4, age: 0, var: (Math.random() * HOLE_VARS) | 0 };
+  holes.push(h); // drawn live every frame from tiny sprites — no baked layer to maintain
+  if (holes.length > 2500) holes.shift();
 }
 function loseHelmet(u) {
   const hadHat = !u.helmet && !!u.hat; // sniper camo hat flies instead of a helmet
@@ -721,9 +836,10 @@ function startRoll(u, dx, dy) {
 // Roll endpoints must stay on the field: a full roll carries ~105px
 // (250px/s x 0.42s), so the whole launch must stay on the map or the dodge
 // grinds on the edge clamp. Barricades are NOT
-// blockers — a roll into concrete pins briefly, then the post-roll momentum
-// vaults clean over (the freshRoll exemption in the vault trigger), so
-// dodge-rolls still escape over walls like they always did.
+// blockers — a roll carries straight over mid-span concrete (the mid-roll
+// vault in the wall collision below), so dodge-rolls still escape over
+// walls like they always did; end-on rolls pin and deflect past the cap,
+// then the post-roll momentum (freshRoll) can earn the hop after a grind.
 function rollSideClear(x, y, dx, dy, r) {
   const ex = x + dx * 110, ey = y + dy * 110;
   if (ex < r || ex > FW - r || ey < r || ey > FH - r) return false;
@@ -793,59 +909,42 @@ function drawGrass() {
   ctx.strokeStyle = "rgba(255,255,255,0.28)"; ctx.lineWidth = 3;
   ctx.strokeRect(0, 0, FW, FH);
 }
-// Ground layers: the grass stays as ONE zoom-baked composite (a single 1:1
-// slice per frame), while the baked craters blit as their own visible-slice
-// right after — crater churn (adds AND expiries, several per second in a
-// battle) must never trigger a full-field resample: that was an ~18ms hitch
-// up to 4x/sec. Composite rebuilds only on zoom/resize now.
-let farCv = null, farCtx = null, farZ = 0, farBg = null;
-const FAR_BUDGET = 8 * 1024 * 1024; // composite cap (~32MB); bigger falls back to direct blits
+// Ground layers: single composite when the GPU keeps big canvases alive
+// (1 blit/frame — the fast path), else the tile fallback (same art, more
+// blits). Holes draw live from tiny sprites right after (counts are small;
+// churn needs no bake at all).
+let lastZoomT = 0; // last time zoom actually changed (zoomAt/resize stamp it)
+function zoomSettled() { return performance.now() - lastZoomT > 350; } // true once the gesture is over (smooth resampling only on settled frames)
 function groundLayers() {
-  if (zoom > 1 || !bgCv) { // zoomed in: direct slices (small source, same as before)
-    if (bgCv) blitWorld(bgCv);
-    if (holeCv && holes.length) blitWorld(holeCv);
-    return;
-  }
-  const rebuild = !farCv || farZ !== zoom || farBg !== bgCv;
-  if (rebuild) {
-    const w = Math.max(1, Math.round(FW * zoom * DPR)), h = Math.max(1, Math.round(FH * zoom * DPR));
-    if (w * h > FAR_BUDGET) { // absurdly large: direct blits, no giant canvas
-      blitWorld(bgCv);
-      if (holeCv && holes.length) blitWorld(holeCv);
-      return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = zoomSettled(); // settled frames resample smooth; mid-gesture frames take the fast nearest path
+  const s = DPR * zoom;
+  if (bgCv) {
+    const wx0 = Math.max(0, cam.x), wy0 = Math.max(0, cam.y);
+    const wx1 = Math.min(FW, cam.x + W / zoom), wy1 = Math.min(FH, cam.y + H / zoom);
+    if (wx1 > wx0 && wy1 > wy0) {
+      ctx.drawImage(bgCv, wx0 * DPR, wy0 * DPR, (wx1 - wx0) * DPR, (wy1 - wy0) * DPR, (wx0 - cam.x) * s, (wy0 - cam.y) * s, (wx1 - wx0) * s, (wy1 - wy0) * s);
     }
-    if (!farCv || farCv.width !== w || farCv.height !== h) {
-      farCv = document.createElement("canvas"); farCv.width = w; farCv.height = h;
-      farCtx = farCv.getContext("2d");
+  } else {
+    const x0 = cam.x, y0 = cam.y, x1 = cam.x + W / zoom, y1 = cam.y + H / zoom;
+    for (const t of grassTiles) {
+      if (t.x + t.w < x0 || t.x > x1 || t.y + t.h < y0 || t.y > y1) continue;
+      ctx.drawImage(t.c, (t.x - cam.x) * s, (t.y - cam.y) * s, t.w * s, t.h * s);
     }
-    farCtx.setTransform(1, 0, 0, 1, 0, 0);
-    farCtx.clearRect(0, 0, w, h);
-    farCtx.setTransform(zoom * DPR, 0, 0, zoom * DPR, 0, 0);
-    farCtx.drawImage(bgCv, 0, 0, bgCv.width, bgCv.height, 0, 0, FW, FH);
-    farZ = zoom; farBg = bgCv;
   }
-  // 1:1 slice of the zoom-baked composite (dest == source size: fast path)
-  const s = zoom * DPR;
-  let sx = cam.x * s, sy = cam.y * s;
-  const dx = Math.max(0, -sx), dy = Math.max(0, -sy);
-  sx = Math.max(0, sx); sy = Math.max(0, sy);
-  let sw = Math.min(cv.width - dx, farCv.width - sx), sh = Math.min(cv.height - dy, farCv.height - sy);
-  if (sw > 0 && sh > 0) ctx.drawImage(farCv, sx, sy, sw, sh, dx, dy, sw, sh);
-  // solid craters: their own slice (visible region only, never a rebuild)
-  if (holeCv && holes.length) blitWorld(holeCv);
+  ctx.imageSmoothingEnabled = false;
+  ctx.setTransform(DPR * zoom, 0, 0, DPR * zoom, -cam.x * DPR * zoom, -cam.y * DPR * zoom);
+  // craters, all ages: solid (alpha 1) plus fading tail, culled (sprites fit in 40px)
+  const hx0 = cam.x - 40, hy0 = cam.y - 40, hx1 = cam.x + W / zoom + 40, hy1 = cam.y + H / zoom + 40;
+  for (const h of holes) {
+    if (h.x < hx0 || h.x > hx1 || h.y < hy0 || h.y > hy1) continue;
+    const age = h.age || 0;
+    ctx.globalAlpha = age <= HOLE_SOLID ? 1 : Math.max(0, 1 - (age - HOLE_SOLID) / HOLE_FADE);
+    drawHoleOn(ctx, h);
+  }
+  ctx.globalAlpha = 1;
 }
-// slice blit of one world-sized layer at any zoom (used zoomed in past 1x,
-// where the source slice is small; the composite above covers zoom <= 1)
-function blitWorld(layer) {
-  const z = zoom, cw = cv.width, ch = cv.height;
-  let sx = cam.x * DPR, sy = cam.y * DPR, sw = cw / z, sh = ch / z;
-  let dx = 0, dy = 0, dw = cw, dh = ch;
-  if (sx < 0) { const c = -sx; dx = c * z; sx = 0; sw -= c; dw -= c * z; }
-  if (sy < 0) { const c = -sy; dy = c * z; sy = 0; sh -= c; dh -= c * z; }
-  if (sx + sw > layer.width) { const e = sx + sw - layer.width; sw -= e; dw -= e * z; }
-  if (sy + sh > layer.height) { const e = sy + sh - layer.height; sh -= e; dh -= e * z; }
-  if (sw > 0 && sh > 0 && dw > 0 && dh > 0) ctx.drawImage(layer, sx, sy, sw, sh, dx, dy, dw, dh);
-}
+// (zoom-baked composite + slice blitter removed: tiles above need no rebake)
 
 // ---------- spawning / editing ----------
 const MAX_UNITS = 400;
@@ -876,7 +975,10 @@ function spawn(kind, faction, x, y) {
 // perf-cache fields (pre-initialized so every unit shares one hidden class;
 // the step code only ever assigns these, never adds new shapes mid-battle)
     _e40: false, allyBlock: false, _advX: 0, _advY: 0, _advT: null, _advDone: false,
+    _scTick: -1, _scRet: 0, _scRes: null, // seekCover per-step memo (same inputs all step)
     _fsx: 0, _fsy: 0, _ffx: 0, _ffy: 0, _fanx: 0, _fany: 0, _fanc: 0,
+    trunkTouch: null, escGx: 0, escGy: 0, // trunk-grind slide state (same hidden class, see the wall/edge slide)
+    trunkPrev: null, trunkN: 0, // consecutive-step contact counter: engagement signal (see collision loop)
   };
   units.push(u); return u;
 }
@@ -907,7 +1009,7 @@ function eraseAt(x, y) {
     const t = trees[bestTree];
     poof(t.x, t.y, "#7a5a36", 10);
     trees.splice(bestTree, 1);
-    if (selBarr === t) selBarr = null;
+    bumpTrees();
     // take its fallen bark (and shaken leaves) with it — otherwise chips
     // linger as odd brown dots and leaves as odd green ones; concrete
     // debris goes with a removed barricade the same way
@@ -1069,7 +1171,7 @@ function buildSppre() {
   document.getElementById("ppclose").addEventListener("click", e => { e.stopPropagation(); brush.spawner = false; hideSppre(); refreshBar(); });
 }
 function plantTree(x, y) {
-  if (trees.length >= MAX_TREES) return null;
+  { let nt = 0; for (const t of trees) if (t.kind !== "barr" && ++nt >= MAX_TREES) return null; }
   x = Math.max(TREE_R, Math.min(FW - TREE_R, x));
   y = Math.max(TREE_R, Math.min(FH - TREE_R, y));
   // trunks may not overlap, but canopies can — trees plant as close as
@@ -1078,8 +1180,11 @@ function plantTree(x, y) {
   for (const t of trees) { const dx = t.x - x, dy = t.y - y, m = t.kind === "barr" ? 44 : TRUNK_R * 2 + 8; if (dx*dx + dy*dy < m * m) return null; }
   for (const u of units) { const dx = u.x - x, dy = u.y - y, m = TREE_R + 13; if (dx*dx + dy*dy < m * m) return null; }
   for (const s of spawners) { const dx = s.x - x, dy = s.y - y, m = TREE_R + SP_R; if (dx*dx + dy*dy < m * m) return null; }
-  const t = { x, y, r: TREE_R, seed: Math.random() * 1000, chip: 0, scars: [] };
-  trees.push(t); return t;
+  const sd = Math.random() * 1000;
+  const t = { x, y, r: TREE_R, seed: sd, chip: 0, scars: [], seq: treeSeq++,
+    hp: TREE_HP, maxHp: TREE_HP, // dormant (nothing damages or destroys cover yet)
+    qi: (Math.round(Math.sin(sd) * 2) + 2) * 5 + (Math.round(Math.cos(sd * 1.3) * 2) + 2) }; // canopy variant baked at plant (per-frame trig saved)
+  trees.push(t); bumpTrees(); return t;
 }
 function barrAng(t) { return ((((t.dir || 0) % 8) + 8) % 8) * Math.PI / 4; } // 8 directions
 // A wall whose long axis points at the threat screens almost nothing —
@@ -1088,9 +1193,9 @@ function barrAng(t) { return ((((t.dir || 0) % 8) + 8) % 8) * Math.PI / 4; } // 
 // holder plants instead of strafing). Score those end-on walls as open
 // ground so broadside walls and trunks win the assignment instead.
 function barrEndOn(t, tx, ty) {
-  const wa = barrAng(t);
+  const dd = barrDir(t), ca = BARR_COS[dd], sa = BARR_SIN[dd];
   const rx = tx - t.x, ry = ty - t.y, rl = Math.max(1, Math.sqrt(rx * rx + ry * ry));
-  return Math.abs(Math.cos(wa) * rx / rl + Math.sin(wa) * ry / rl) > 0.75;
+  return Math.abs(ca * rx / rl + sa * ry / rl) > 0.75;
 }
 // Shove a resting point (a corpse being baked, a settled helmet) off the
 // concrete: bodies and headgear never come to rest on top of a barricade.
@@ -1118,24 +1223,26 @@ function ejectBarr(x, y, clear) {
   return [x, y];
 }
 function barrSeg(t) { // wall endpoints around the barrier center
+  // baked at placement (sx1.., _seg) — old saves and script-pushed walls
+  // fill the cache lazily on first use, same values either way.
+  if (t._seg) return t._seg;
   const a = barrAng(t), dx = Math.cos(a) * BARR_HALF, dy = Math.sin(a) * BARR_HALF;
-  return [t.x - dx, t.y - dy, t.x + dx, t.y + dy];
+  t.sx1 = t.x - dx; t.sy1 = t.y - dy; t.sx2 = t.x + dx; t.sy2 = t.y + dy;
+  const nl = Math.max(1, Math.hypot(dx, dy)); t.sax = dx / nl; t.say = dy / nl;
+  t._seg = [t.sx1, t.sy1, t.sx2, t.sy2];
+  return t._seg;
 }
-// per-tick cache of wall segments (+ axis + center): the AI/body loops all
-// walk walls, and recomputing cos/sin per unit per wall is the most
-// expensive part of every wall scan at high unit counts. Walls only change
-// between steps, so one rebuild per step (keyed on simT) serves the whole
-// tick; entries hold the live wall ref for identity.
-let segCache = [], segCacheT = -1;
+// per-edit cache of wall segments (+ axis + center): walls never move, so
+// one rebuild per terrain edit (keyed on treesV) serves every step and every
+// scan; entries hold the live wall ref for identity.
+let segCache = [], segCacheV = -1;
 function wallSegs() {
-  if (segCacheT !== simT) {
-    segCacheT = simT; segCache = [];
+  if (segCacheV !== treesV) {
+    segCacheV = treesV; segCache = [];
     for (const t of trees) {
       if (t.kind !== "barr") continue;
       const s = barrSeg(t);
-      let ax = s[2] - s[0], ay = s[3] - s[1];
-      const al = Math.max(1, Math.hypot(ax, ay)); ax /= al; ay /= al;
-      segCache.push({ t, x1: s[0], y1: s[1], x2: s[2], y2: s[3], ax, ay });
+      segCache.push({ t, x1: s[0], y1: s[1], x2: s[2], y2: s[3], ax: t.sax, ay: t.say });
     }
   }
   return segCache;
@@ -1195,18 +1302,10 @@ function barrBetween(ct, u, b) {
   if (cx * cx + cy * cy > 60 * 60) return false;
   return true;
 }
-function barricadeAt(x, y) { // nearest barricade whose wall is under the cursor
-  let hit = null, hd = 18 * 18;
-  for (const t of trees) {
-    if (t.kind !== "barr") continue;
-    const s = barrSeg(t);
-    const dd = segDist(x, y, s[0], s[1], s[2], s[3]);
-    if (dd * dd < hd) { hd = dd * dd; hit = t; }
-  }
-  return hit;
-}
+const BARR_MAX = 600; // barricade cap is 1.5x trees: walls are the cheap cover spam
+const BARR_HP = 500; // dormant health (no destruction yet — reserved for future use)
 function plantBarr(x, y) {
-  if (trees.length >= MAX_TREES) return null;
+  { let nb = 0; for (const t of trees) if (t.kind === "barr" && ++nb >= BARR_MAX) return null; }
   x = Math.max(BARR_HALF, Math.min(FW - BARR_HALF, x));
   y = Math.max(BARR_HALF, Math.min(FH - BARR_HALF, y));
   // barricades chain into walls, so they plant closer than trees — but never
@@ -1224,35 +1323,20 @@ function plantBarr(x, y) {
   // unit standing past the wall's end but still inside the concrete capsule
   // (center 37px vs end cap at 24px + body). Nobody plants concrete under
   // flesh — units can never start a life standing on a barricade.
-  {
-    const pa = (((pendingBarrDir | 0) % 8) + 8) % 8 * Math.PI / 4;
-    const pex = Math.cos(pa) * BARR_HALF, pey = Math.sin(pa) * BARR_HALF;
-    for (const u of units) {
-      if (segDist(u.x, u.y, x - pex, y - pey, x + pex, y + pey) < BARR_HW + 13) return null;
-    }
+  // Segment endpoints are baked onto the wall at placement (the only cos/sin
+  // this wall ever costs) — every per-step scan reads the cache instead.
+  const pa = (((pendingBarrDir | 0) % 8) + 8) % 8 * Math.PI / 4;
+  const pex = Math.cos(pa) * BARR_HALF, pey = Math.sin(pa) * BARR_HALF;
+  const pnl = Math.max(1, Math.hypot(pex, pey));
+  for (const u of units) {
+    if (segDist(u.x, u.y, x - pex, y - pey, x + pex, y + pey) < BARR_HW + 13) return null;
   }
   for (const s of spawners) { const dx = s.x - x, dy = s.y - y, m = BARR_HALF + SP_R; if (dx*dx + dy*dy < m * m) return null; }
-  const t = { kind: "barr", x, y, r: BARR_HALF, dir: pendingBarrDir | 0 };
-  trees.push(t); return t;
-}
-function selectBarr(b) { selBarr = b; }
-// Tapping a wall also previews its direction, so the next placed wall
-// inherits it and chains continue at the same angle without scrolling first
-function selectBarrPicked(b) { selBarr = b; if (b) pendingBarrDir = (b.dir | 0); }
-// Wheel rotates the selected wall in place (scroll handler, inline); this
-// helper is the same operation for console/tests: true when something
-// rotated, false when there is no selection to rotate
-function rotateSelected() {
-  if (selBarr && trees.includes(selBarr)) {
-    selBarr.dir = (((selBarr.dir || 0) + 1) % 8 + 8) % 8;
-    pendingBarrDir = selBarr.dir; // the next placed wall matches
-    return true;
-  }
-  selBarr = null;
-  // no selection while the barricade brush is picked: spin the placement
-  // ghost instead — new walls inherit the previewed direction
-  if (brush.unit === "barricade") { pendingBarrDir = (((pendingBarrDir | 0) + 1) % 8 + 8) % 8; return true; }
-  return false;
+  const t = { kind: "barr", x, y, r: BARR_HALF, dir: pendingBarrDir | 0, seq: treeSeq++,
+    hp: BARR_HP, maxHp: BARR_HP, // dormant (nothing damages or destroys cover yet)
+    sx1: x - pex, sy1: y - pey, sx2: x + pex, sy2: y + pey, sax: pex / pnl, say: pey / pnl,
+    _seg: [x - pex, y - pey, x + pex, y + pey] };
+  trees.push(t); bumpTrees(); return t;
 }
 // Concrete impact: barricades never shake, but a hit reads in three beats —
 // a white-hot contact flash, a fan of orange sparks arcing back toward the
@@ -1330,6 +1414,7 @@ function chipTree(t, x, y, b) {
   let dy = Math.max(-12, Math.min(18, y - (t.y + 15)));
   t.scars.push({ dx, dy, r: 1.5 + Math.random() * 2.5 });
   if (t.scars.length > 24) t.scars.shift();
+  scarsV++; // trunk art changed (under-layer cache must rebuild)
   const ba = b ? Math.atan2(b.vy, b.vx) : 0;
   // knocked canopy shudder
   t.wob = 1;
@@ -1371,6 +1456,78 @@ let coverOcc = new Map();
 let treeSet = new Set();
 let tgtCount = new Map();
 let stepTick = 0; // per-step counter (throttles/staggers periodic scans)
+// Static-cover broadphase for bullets AND bodies: cells hold trees in `trees`
+// order, and each tree is entered in every cell its shape can reach with a
+// margin (BARR_HW/TRUNK_R + 10) that covers both bullet skins and the widest
+// unit-collision reach (BARR_HW/TRUNK_R + radius*0.7), so a single-cell
+// query returns every tree the full scan could touch, in the same order —
+// first-hit and pushout behavior identical, at O(occupancy).
+const TGS = 48;
+let treesV = 0, treeGridV = -1, treeGrid = new Map();
+let treeSeq = 0; // plant-order sequence (grid ties resolve in trees order, exactly like the full scans)
+let scarsV = 0; // bark-scar art version (chipTree bark hits; trashReset clear) — invalidates the tree under-layer cache
+function bumpTrees() { treesV++; }
+// Ghost cap readout: tree/barricade counts cached per terrain edit (the
+// placement ghost checks them every frame, so no rescan per frame).
+let capV = -1, capWood = 0, capBarr = 0;
+function coverCounts() {
+  if (capV !== treesV) {
+    capV = treesV; capWood = 0; capBarr = 0;
+    for (const t of trees) { if (t.kind === "barr") capBarr++; else capWood++; }
+  }
+}
+function tgk(x, y) { const cx = (((x / TGS) | 0) + 128), cy = (((y / TGS) | 0) + 128); return cx * 2048 + cy; }
+function treeGridGet() {
+  if (treeGridV === treesV) return treeGrid;
+  treeGridV = treesV; treeGrid = new Map();
+  const put = (x0, y0, x1, y1, t) => {
+    const cx0 = ((x0 / TGS) | 0), cx1 = ((x1 / TGS) | 0), cy0 = ((y0 / TGS) | 0), cy1 = ((y1 / TGS) | 0);
+    for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
+      const k = (cx + 128) * 2048 + (cy + 128);
+      let a = treeGrid.get(k); if (!a) { a = []; treeGrid.set(k, a); } a.push(t);
+    }
+  };
+  for (const t of trees) {
+    if (t._seq === undefined) t._seq = (t.seq === undefined ? treeSeq++ : t.seq); // script-pushed cover (old saves) joins the plant order here, in trees order
+    if (t.kind === "barr") {
+      const s = barrSeg(t), m = BARR_HW + 10;
+      put(Math.min(s[0], s[2]) - m, Math.min(s[1], s[3]) - m, Math.max(s[0], s[2]) + m, Math.max(s[1], s[3]) + m, t);
+    } else {
+      const m = TRUNK_R + 10;
+      put(t.x - m, t.y + 15 - m, t.x + m, t.y + 15 + m, t);
+    }
+  }
+  return treeGrid;
+}
+// First trunk (in plant order) whose base comes within r2 of the muzzle->
+// lead lane — the grid-AABB version of the old full-trees scan. Cells ARE
+// the broadphase (every trunk near the lane reaches a queried cell, in trees
+// order per cell); the minimum plant-order index among exact hits is the
+// same tree the old break-on-first-hit returned. Walls never screen lanes,
+// so they are skipped exactly like before. `exempt` is the target's own
+// tree while it is actively tucked behind it (legitimate target, see below).
+function laneBlocker(tg, x0, y0, ex, ey, ll2, r2, exempt) {
+  const cx0 = (((Math.min(x0, x0 + ex) - 16) / TGS) | 0), cx1 = (((Math.max(x0, x0 + ex) + 16) / TGS) | 0);
+  const cy0 = (((Math.min(y0, y0 + ey) - 16) / TGS) | 0), cy1 = (((Math.max(y0, y0 + ey) + 16) / TGS) | 0);
+  let best = null, bestSeq = Infinity;
+  for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
+    const cell = tg.get((cx + 128) * 2048 + (cy + 128));
+    if (!cell) continue;
+    for (const t of cell) {
+      if (t.kind === "barr" || t === exempt || t._seq >= bestSeq) continue;
+      const rx = t.x - x0, ry = (t.y + 15) - y0;
+      let s = (rx * ex + ry * ey) / ll2;
+      s = s < 0 ? 0 : (s > 1 ? 1 : s);
+      const px = rx - ex * s, py = ry - ey * s;
+      if (px * px + py * py < r2) { best = t; bestSeq = t._seq; }
+    }
+  }
+  return best;
+}
+// Per-step wall-guard index, built lazily on the first wall hit per step:
+// the old code rescanned all units per wall crossing (no early break when
+// nobody guards it — the common case). Same set, same order, O(guards).
+let wallGuards = null, wallGuardsTick = -1;
 function coverJoin(u, t) { // assign u.coverTree = t, keeping occupancy exact
   if (u.coverTree === t) return;
   coverLeave(u);
@@ -1389,6 +1546,12 @@ function seekCover(u, dx, dy, d, retreat) {
   // an erased field holds no cover: drop the assignment too, so a removed
   // wall (or trunk) never lingers as a stale coverTree
   if (trees.length === 0) { coverLeave(u); return null; }
+  // per-step memo: branches call seekCover up to 4x per unit per step with
+  // identical inputs (positions/targets only change between steps) — the
+  // joins/leaves below are idempotent, so replaying the cached result is
+  // the same assignment at a quarter of the scans.
+  const rk = retreat ? 1 : 0;
+  if (u._scTick === stepTick && u._scRet === rk) return u._scRes;
   const wnd = u.hp < u.maxHp * (u.fleeHp || 0.35); // the hurt look for wood behind them, not ahead
   const rearCut = (retreat && u.kind === "sniper") ? -160 : -40; // retreating snipers rally to wood behind them too
   const ex = dx / d, ey = dy / d; // unit -> threat
@@ -1408,11 +1571,12 @@ function seekCover(u, dx, dy, d, retreat) {
       // and walls would never get picked.
       const curScore = wnd ? duCur + aCur * 0.5 : duCur - Math.min(aCur, 120) * 0.5;
       let ch = null, chBs = curScore - 20;
-      for (const t of trees) {
-        if (t.kind !== "barr") continue;
+      for (const w of wallSegs()) { // walls only (persistent per-edit list, trees order) — same candidates as the full scan filtered to barrs
+        const t = w.t;
         const qx = t.x - u.x, qy = t.y - u.y;
-        const du = Math.sqrt(qx * qx + qy * qy);
-        if (du > 340) continue;
+        const q2 = qx * qx + qy * qy;
+        if (q2 > 340 * 340) continue;
+        const du = Math.sqrt(q2);
         const along = qx * ex + qy * ey;
         if (wnd ? along > 120 : along < rearCut) continue;
         const occ = coverOcc.get(t);
@@ -1425,8 +1589,9 @@ function seekCover(u, dx, dy, d, retreat) {
   }
   if (!best) for (const t of trees) {
     const rx = t.x - u.x, ry = t.y - u.y;
-    const du = Math.sqrt(rx * rx + ry * ry);
-    if (du > 340) continue;
+    const r2 = rx * rx + ry * ry;
+    if (r2 > 340 * 340) continue;
+    const du = Math.sqrt(r2);
     const along = rx * ex + ry * ey;
     if (wnd ? along > 120 : along < rearCut) continue;
     const occ = coverOcc.get(t); // allies already on this cover (self excluded)
@@ -1438,14 +1603,15 @@ function seekCover(u, dx, dy, d, retreat) {
     if (t.kind === "barr" && !barrEndOn(t, u.tx.x, u.tx.y)) score -= 60; // barricade preference
     if (score < bs) { bs = score; best = t; }
   }
-  if (!best) { coverLeave(u); return null; }
+  if (!best) { coverLeave(u); u._scTick = stepTick; u._scRet = rk; return u._scRes = null; }
   coverJoin(u, best);
   let fx = u.tx.x - best.x, fy = u.tx.y - best.y;
   const fl = Math.max(1, Math.sqrt(fx * fx + fy * fy));
   fx /= fl; fy /= fl;
   let px, py;
   if (best.kind === "barr") { // tuck behind the wall, sidestepping along it
-    const wa = barrAng(best), wx = Math.cos(wa), wy = Math.sin(wa);
+    barrSeg(best); // ensure the baked axis exists (old saves fill it lazily)
+    const wx = best.sax, wy = best.say;
     px = best.x - fx * (BARR_HW + 14) + wx * 22 * (u.coverSide || 1);
     py = best.y - fy * (BARR_HW + 14) + wy * 22 * (u.coverSide || 1);
     // an axis-aligned threat folds the sidestep back onto the concrete (the
@@ -1491,9 +1657,11 @@ function seekCover(u, dx, dy, d, retreat) {
   if (shielded || vd < 30) {
     const dot = (best.x - u.x) * dx + (best.y - u.y) * dy; // trunk between us and threat?
     const nx = vd > 1 ? vx / vd : 0, ny = vd > 1 ? vy / vd : 0; // homing vector for a planted stance
-    return { go: false, inCover: shielded || dot > 0, cx: nx, cy: ny, vd, t: best };
+    u._scTick = stepTick; u._scRet = rk;
+    return u._scRes = { go: false, inCover: shielded || dot > 0, cx: nx, cy: ny, vd, t: best };
   }
-  return { go: true, inCover: false, cx: vx / vd, cy: vy / vd, vd, t: best };
+  u._scTick = stepTick; u._scRet = rk;
+  return u._scRes = { go: true, inCover: false, cx: vx / vd, cy: vy / vd, vd, t: best };
 }
 // Sniper cover discipline: route through seekCover, but never walk TOWARD a
 // close enemy to reach a tree — the spot must lie behind (or beside) the
@@ -1544,17 +1712,24 @@ function sniperCampTree(u, dx, dy, d) {
   return { go: cv.go, inCover: false, cx, cy, vd: cv.vd, t: cv.t, push: true };
 }
 function renderBarkBits() {
+  // Viewport culling (see visBox): pan/zoom-friendly fields skip the
+  // off-screen majority. Margins are generous so overhang (canopies,
+  // shadows, guns, flashes, rings) never pops at the screen edge.
+  // At fit-all zoom everything is visible, so this is a no-op there.
+  const vx0 = cam.x - 30, vy0 = cam.y - 30, vx1 = cam.x + W / zoom + 30, vy1 = cam.y + H / zoom + 30;
   // bark chips around trunk bases, fading out over the last 2s. Settled
   // chips batch into one fill (rotation is invisible at these sizes);
   // falling chips tumble individually, and fading ones need own alpha.
   ctx.fillStyle = "#6b4e2e";
   ctx.beginPath();
   for (const b of barkBits) {
+    if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
     if (b.age > 8 || b.falling) continue;
     ctx.rect(b.x - b.s, b.y - b.s * 0.6, b.s * 2, b.s * 1.2);
   }
   ctx.fill();
   for (const b of barkBits) {
+    if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
     if (b.falling) {
       ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.rot || 0);
       ctx.fillRect(-b.s, -b.s * 0.6, b.s * 2, b.s * 1.2);
@@ -1570,7 +1745,9 @@ function renderBarkBits() {
 function renderLeafBits() {
   // shaken-out leaves: same 10s linger as bark (fade over the last 2s).
   // Per-bit greens, drawn individually — few hundred at most, still cheap.
+  const vx0 = cam.x - 30, vy0 = cam.y - 30, vx1 = cam.x + W / zoom + 30, vy1 = cam.y + H / zoom + 30;
   for (const b of leafBits) {
+    if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
     if (b.age > 8) ctx.globalAlpha = Math.max(0, 1 - (b.age - 8) / 2);
     ctx.fillStyle = b.c || "#3f7a34";
     if (b.falling) {
@@ -1587,12 +1764,15 @@ function renderConcBits() {
   // concrete chips around barricade bases (5s life, fading over the last 2s)
   ctx.fillStyle = "#a9adb3";
   ctx.beginPath();
+  const vx0 = cam.x - 30, vy0 = cam.y - 30, vx1 = cam.x + W / zoom + 30, vy1 = cam.y + H / zoom + 30;
   for (const b of concBits) {
+    if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
     if (b.age > 3 || b.falling) continue;
     ctx.rect(b.x - b.s, b.y - b.s * 0.6, b.s * 2, b.s * 1.2);
   }
   ctx.fill();
   for (const b of concBits) {
+    if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
     if (b.falling) {
       ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.rot || 0);
       ctx.fillRect(-b.s, -b.s * 0.6, b.s * 2, b.s * 1.2);
@@ -1605,102 +1785,169 @@ function renderConcBits() {
   }
   ctx.globalAlpha = 1;
 }
+// Tree art is baked once into shared sprites (same pattern as the unit
+// sprites in buildSprites): per-frame vector arcs cost ~7us/tree and scale
+// linearly, so big forests stutter every frame and any motion (zoom/pan)
+// reveals it. One trunk sprite serves all trees (roots/trunk are identical
+// per tree); 25 canopy variants cover the quantized lobe offsets
+// (q1,q2 in -2..2, <=0.5px from the live value — invisible). Order, colors
+// and sway math are unchanged, so pixels match the vector version.
+let treeBaseSpr = null;
+const TBB_W = 54, TBB_H = 74, TBB_X = -27, TBB_Y = -22;
+let treeCanSpr = [];
+const TBC_W = 120, TBC_H = 95, TBC_X = -60, TBC_Y = -69;
+// barricade directions are 8 discrete angles: bake one body sprite each
+// (2x world units for crisp edges) and index with a trig-free table.
+// Speckles stay live (their pattern hashes the wall position so chained
+// walls don't repeat) and shadows batch into one path.
+const BARR_COS = [], BARR_SIN = [];
+for (let d = 0; d < 8; d++) { BARR_COS.push(Math.cos(d * Math.PI / 4)); BARR_SIN.push(Math.sin(d * Math.PI / 4)); }
+function barrDir(t) { return ((((t.dir || 0) % 8) + 8) % 8); }
+let barrSprs = [];
+function buildBarrSprites() {
+  if (barrSprs.length === 8) return; // direction-baked: DPR-independent, build once, never invalidated
+  barrSprs = [];
+  const SS = 2; // 2x bake keeps edges crisp to DPR*zoom 2; every sprite is ~110px, far under backing limits
+  for (let d = 0; d < 8; d++) {
+    const a = d * Math.PI / 4, ca = Math.cos(a), sa = Math.sin(a);
+    const ex = (BARR_HALF + 2) * Math.abs(ca) + (BARR_HW + 2) * Math.abs(sa) + 1;
+    const ey = (BARR_HALF + 2) * Math.abs(sa) + (BARR_HW + 2) * Math.abs(ca) + 1;
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.ceil(ex * 2 * SS)); c.height = Math.max(1, Math.ceil(ey * 2 * SS));
+    const g = c.getContext("2d"); g.scale(SS, SS); g.translate(ex, ey); g.rotate(a);
+    g.fillStyle = "#54575e"; g.fillRect(-BARR_HALF - 2, -BARR_HW - 2, BARR_HALF * 2 + 4, BARR_HW * 2 + 4); // dark rim
+    g.fillStyle = "#b9bdc4"; g.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2); // concrete body
+    g.fillStyle = "#d5d9df"; g.fillRect(-BARR_HALF + 3, -BARR_HW + 4, BARR_HALF * 2 - 6, BARR_HW * 2 - 8); // sunlit top face
+    const upT = ca > 0 ? ca : 0, dnT = ca < 0 ? -ca : 0; // local-top edge faces up while cos(a) > 0
+    if (upT > 0.01) { g.fillStyle = "rgba(255,255,255," + (0.35 * upT).toFixed(3) + ")"; g.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, 3); }
+    if (dnT > 0.01) { g.fillStyle = "rgba(0,0,0," + (0.22 * dnT).toFixed(3) + ")"; g.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, 3); }
+    if (dnT > 0.01) { g.fillStyle = "rgba(255,255,255," + (0.35 * dnT).toFixed(3) + ")"; g.fillRect(-BARR_HALF, BARR_HW - 3, BARR_HALF * 2, 3); }
+    if (upT > 0.01) { g.fillStyle = "rgba(0,0,0," + (0.22 * upT).toFixed(3) + ")"; g.fillRect(-BARR_HALF, BARR_HW - 3, BARR_HALF * 2, 3); }
+    g.fillStyle = "#6f747b"; // darker end caps (precast jersey blocks)
+    g.fillRect(-BARR_HALF, -BARR_HW, 3, BARR_HW * 2); g.fillRect(BARR_HALF - 3, -BARR_HW, 3, BARR_HW * 2);
+    const upR = sa < 0 ? -sa : 0, dnR = sa > 0 ? sa : 0; // local +x end faces up while sin(a) < 0
+    if (upR > 0.01) { g.fillStyle = "rgba(255,255,255," + (0.28 * upR).toFixed(3) + ")"; g.fillRect(BARR_HALF - 3, -BARR_HW, 3, BARR_HW * 2); }
+    if (dnR > 0.01) { g.fillStyle = "rgba(0,0,0," + (0.3 * dnR).toFixed(3) + ")"; g.fillRect(BARR_HALF - 3, -BARR_HW, 3, BARR_HW * 2); }
+    if (dnR > 0.01) { g.fillStyle = "rgba(255,255,255," + (0.28 * dnR).toFixed(3) + ")"; g.fillRect(-BARR_HALF, -BARR_HW, 3, BARR_HW * 2); }
+    if (upR > 0.01) { g.fillStyle = "rgba(0,0,0," + (0.3 * upR).toFixed(3) + ")"; g.fillRect(-BARR_HALF, -BARR_HW, 3, BARR_HW * 2); }
+    g.fillStyle = "#8b9097"; // formwork seams splitting three blocks
+    g.fillRect(-BARR_HALF / 3 - 1, -BARR_HW, 2, BARR_HW * 2); g.fillRect(BARR_HALF / 3 - 1, -BARR_HW, 2, BARR_HW * 2);
+    barrSprs.push({ c, w: ex * 2, h: ey * 2 });
+  }
+}
+function buildTreeSprites() {
+  if (treeBaseSpr && treeCanSpr.length === 25) return; // fixed world-unit bake: DPR-independent, build once
+  const SS = 1; // 1x bake keeps every sprite under small-canvas backing limits (some GPUs refuse bigger offscreen canvases); upscaled softly at high DPR*zoom, always visible
+  const c = document.createElement("canvas"); c.width = TBB_W * SS; c.height = TBB_H * SS;
+  const g = c.getContext("2d"); g.scale(SS, SS); g.translate(-TBB_X, -TBB_Y); g.lineCap = "round";
+  g.strokeStyle = "#4a3520"; g.lineWidth = 10; g.beginPath();
+  g.moveTo(0, 30); g.lineTo(-20, 42); g.moveTo(0, 30); g.lineTo(20, 42); g.stroke();
+  g.strokeStyle = "#5a4026"; g.lineWidth = 27; g.beginPath(); g.moveTo(0, -6); g.lineTo(0, 36); g.stroke();
+  g.strokeStyle = "#7a5a36"; g.lineWidth = 12; g.beginPath(); g.moveTo(-3, -6); g.lineTo(-3, 33); g.stroke();
+  treeBaseSpr = { c, w: TBB_W, h: TBB_H };
+  treeCanSpr = [];
+  for (let q1 = -2; q1 <= 2; q1++) for (let q2 = -2; q2 <= 2; q2++) {
+    const cc = document.createElement("canvas"); cc.width = TBC_W * SS; cc.height = TBC_H * SS;
+    const gg = cc.getContext("2d"); gg.scale(SS, SS); gg.translate(-TBC_X, -TBC_Y);
+    gg.fillStyle = "#24521f"; gg.beginPath(); gg.arc(q2, -24, 43, 0, 7); gg.fill();
+    gg.fillStyle = "#2f6b2a"; gg.beginPath(); gg.arc(-26 + q1, -6, 30, 0, 7); gg.arc(26 - q1, -6, 30, 0, 7); gg.fill();
+    gg.fillStyle = "#3a7d33"; gg.beginPath(); gg.arc(q2, -24, 39, 0, 7); gg.fill();
+    gg.fillStyle = "#4c9440"; gg.beginPath(); gg.arc(-8 + q2, -33, 20, 0, 7); gg.fill();
+    treeCanSpr.push(cc);
+  }
+}
 function renderTreeBases() {
   // shadow + trunk live under units; the canopy draws over units (cover feel).
   // The crown sits high so the trunk + roots stay visible below it.
+  // Culled to the viewport (walls/roots/trunks/shadows all fit in 100px).
+  const vx0 = cam.x - 100, vy0 = cam.y - 100, vx1 = cam.x + W / zoom + 100, vy1 = cam.y + H / zoom + 100;
   ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
   for (const t of trees) {
     if (t.kind === "barr") continue;
+    if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
     ctx.moveTo(t.x + 45, t.y + 42); ctx.ellipse(t.x, t.y + 42, 45, 17, 0, 0, 7);
   }
   ctx.fill();
+  // wall shadows batch into one path (same style as the tree shadows above):
+  // same pixels as one rotated rect per wall, one fill total
+  ctx.beginPath();
   for (const t of trees) { // wall shadows hug the wall, offset straight down in world space
     if (t.kind !== "barr") continue;
-    const ba = barrAng(t);
-    ctx.save(); ctx.translate(t.x, t.y + 6); ctx.rotate(ba);
-    ctx.fillRect(-BARR_HALF - 2, -BARR_HW - 1, BARR_HALF * 2 + 4, BARR_HW * 2 + 2);
-    ctx.restore();
+    if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
+    const dd = barrDir(t), ax = BARR_COS[dd], ay = BARR_SIN[dd];
+    const hx = BARR_HALF + 2, hy = BARR_HW + 1, oy = t.y + 6;
+    const c0x = t.x - ax * hx + ay * hy, c0y = oy - ay * hx - ax * hy;
+    const c1x = t.x + ax * hx + ay * hy, c1y = oy + ay * hx - ax * hy;
+    const c2x = t.x + ax * hx - ay * hy, c2y = oy + ay * hx + ax * hy;
+    const c3x = t.x - ax * hx - ay * hy, c3y = oy - ay * hx + ax * hy;
+    ctx.moveTo(c0x, c0y); ctx.lineTo(c1x, c1y); ctx.lineTo(c2x, c2y); ctx.lineTo(c3x, c3y); ctx.closePath();
   }
-  ctx.lineCap = "round";
+  ctx.fill();
+  ctx.imageSmoothingEnabled = zoomSettled(); // settled frames resample smooth (matches the vector look); mid-gesture frames take the fast nearest path and the crisp smooth frame lands on settle
   for (const t of trees) {
-    if (t.kind === "barr") { // short concrete jersey barrier, angled by its direction
-      const a = barrAng(t), ca = Math.cos(a), sa = Math.sin(a);
-      ctx.save(); ctx.translate(t.x, t.y); ctx.rotate(a);
-      ctx.fillStyle = "#54575e"; ctx.fillRect(-BARR_HALF - 2, -BARR_HW - 2, BARR_HALF * 2 + 4, BARR_HW * 2 + 4); // dark rim
-      ctx.fillStyle = "#b9bdc4"; ctx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2); // concrete body
-      // flat sunlit top face of the jersey profile — symmetric, so it reads at any angle
-      ctx.fillStyle = "#d5d9df"; ctx.fillRect(-BARR_HALF + 3, -BARR_HW + 4, BARR_HALF * 2 - 6, BARR_HW * 2 - 8);
-      // world-space sun: wash the up-facing long edge, shade the down-facing one
-      const upT = ca > 0 ? ca : 0, dnT = ca < 0 ? -ca : 0; // local-top edge faces up while cos(a) > 0
-      if (upT > 0.01) { ctx.fillStyle = "rgba(255,255,255," + (0.35 * upT).toFixed(3) + ")"; ctx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, 3); }
-      if (dnT > 0.01) { ctx.fillStyle = "rgba(0,0,0," + (0.22 * dnT).toFixed(3) + ")"; ctx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, 3); }
-      if (dnT > 0.01) { ctx.fillStyle = "rgba(255,255,255," + (0.35 * dnT).toFixed(3) + ")"; ctx.fillRect(-BARR_HALF, BARR_HW - 3, BARR_HALF * 2, 3); }
-      if (upT > 0.01) { ctx.fillStyle = "rgba(0,0,0," + (0.22 * upT).toFixed(3) + ")"; ctx.fillRect(-BARR_HALF, BARR_HW - 3, BARR_HALF * 2, 3); }
-      ctx.fillStyle = "#6f747b"; // darker end caps (precast jersey blocks)
-      ctx.fillRect(-BARR_HALF, -BARR_HW, 3, BARR_HW * 2); ctx.fillRect(BARR_HALF - 3, -BARR_HW, 3, BARR_HW * 2);
-      // sun on the up-facing end, shade on the down-facing end
-      const upR = sa < 0 ? -sa : 0, dnR = sa > 0 ? sa : 0; // local +x end faces up while sin(a) < 0
-      if (upR > 0.01) { ctx.fillStyle = "rgba(255,255,255," + (0.28 * upR).toFixed(3) + ")"; ctx.fillRect(BARR_HALF - 3, -BARR_HW, 3, BARR_HW * 2); }
-      if (dnR > 0.01) { ctx.fillStyle = "rgba(0,0,0," + (0.3 * dnR).toFixed(3) + ")"; ctx.fillRect(BARR_HALF - 3, -BARR_HW, 3, BARR_HW * 2); }
-      if (dnR > 0.01) { ctx.fillStyle = "rgba(255,255,255," + (0.28 * dnR).toFixed(3) + ")"; ctx.fillRect(-BARR_HALF, -BARR_HW, 3, BARR_HW * 2); }
-      if (upR > 0.01) { ctx.fillStyle = "rgba(0,0,0," + (0.3 * upR).toFixed(3) + ")"; ctx.fillRect(-BARR_HALF, -BARR_HW, 3, BARR_HW * 2); }
-      ctx.fillStyle = "#8b9097"; // formwork seams splitting three blocks
-      ctx.fillRect(-BARR_HALF / 3 - 1, -BARR_HW, 2, BARR_HW * 2); ctx.fillRect(BARR_HALF / 3 - 1, -BARR_HW, 2, BARR_HW * 2);
-      ctx.fillStyle = "rgba(90,94,100,0.45)"; // aggregate speckle (deterministic per wall: no flicker)
-      for (let k = 0; k < 8; k++) {
-        const spx = -BARR_HALF + 4 + (Math.abs(t.x * 7 + t.y * 13 + k * 17) % (BARR_HALF * 2 - 8));
-        const spy = -BARR_HW + 3 + (Math.abs(t.x * 3 + t.y * 11 + k * 29) % (BARR_HW * 2 - 6));
-        ctx.fillRect(spx, spy, 1.6, 1.6);
-      }
-      ctx.restore();
-      if (selBarr === t) { // selected: white ring so R has a visible target
-        ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(t.x, t.y, BARR_HALF + 12, 0, 7); ctx.stroke();
-      }
+    if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
+    if (t.kind === "barr") { // baked body sprite per direction (speckles batch after the loop)
+      const dd = barrDir(t);
+      let bs = barrSprs[dd];
+      if (!bs) { buildBarrSprites(); bs = barrSprs[dd]; }
+      ctx.drawImage(bs.c, t.x - bs.w / 2, t.y - bs.h / 2, bs.w, bs.h);
       continue;
     }
-    // roots
-    ctx.strokeStyle = "#4a3520"; ctx.lineWidth = 10;
-    ctx.beginPath();
-    ctx.moveTo(t.x, t.y + 30); ctx.lineTo(t.x - 20, t.y + 42);
-    ctx.moveTo(t.x, t.y + 30); ctx.lineTo(t.x + 20, t.y + 42);
-    ctx.stroke();
-    // trunk: dark bark with a lit inner strip
-    ctx.strokeStyle = "#5a4026"; ctx.lineWidth = 27;
-    ctx.beginPath(); ctx.moveTo(t.x, t.y - 6); ctx.lineTo(t.x, t.y + 36); ctx.stroke();
-    ctx.strokeStyle = "#7a5a36"; ctx.lineWidth = 12;
-    ctx.beginPath(); ctx.moveTo(t.x - 3, t.y - 6); ctx.lineTo(t.x - 3, t.y + 33); ctx.stroke();
-    // chipped-bark scars: pale wood showing through
-    ctx.fillStyle = "#d8b988";
-    ctx.beginPath();
-    for (const s of t.scars) { ctx.moveTo(t.x + s.dx + s.r, t.y + 15 + s.dy); ctx.arc(t.x + s.dx, t.y + 15 + s.dy, s.r, 0, 7); }
-    ctx.fill();
+    // roots + trunk: one baked blit (identical for every tree)
+    ctx.drawImage(treeBaseSpr.c, t.x + TBB_X, t.y + TBB_Y, TBB_W, TBB_H);
+    // chipped-bark scars: pale wood showing through (kept per-tree vector so
+    // interleaved trunk/scars order with neighbors is exactly as before)
+    if (t.scars.length) {
+      ctx.fillStyle = "#d8b988";
+      ctx.beginPath();
+      for (const s of t.scars) { ctx.moveTo(t.x + s.dx + s.r, t.y + 15 + s.dy); ctx.arc(t.x + s.dx, t.y + 15 + s.dy, s.r, 0, 7); }
+      ctx.fill();
+    }
   }
+  ctx.imageSmoothingEnabled = false;
+  // aggregate speckle batches into one path + one fill (deterministic per
+  // wall: no flicker, no repeat). Bodies above stay in array order; dots
+  // landing on a chained neighbor read the same on concrete either way.
+  ctx.fillStyle = "rgba(90,94,100,0.45)";
+  ctx.beginPath();
+  for (const t of trees) {
+    if (t.kind !== "barr") continue;
+    if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
+    const dd = barrDir(t), ax = BARR_COS[dd], ay = BARR_SIN[dd];
+    for (let k = 0; k < 8; k++) {
+      const spx = -BARR_HALF + 4 + (Math.abs(t.x * 7 + t.y * 13 + k * 17) % (BARR_HALF * 2 - 8));
+      const spy = -BARR_HW + 3 + (Math.abs(t.x * 3 + t.y * 11 + k * 29) % (BARR_HW * 2 - 6));
+      ctx.rect(t.x + spx * ax - spy * ay, t.y + spx * ay + spy * ax, 1.6, 1.6);
+    }
+  }
+  ctx.fill();
 }
 function renderTreeCanopies() {
   // crown sits high (center y-8) so it reads as a tree, not a bush.
   // Barricades have no canopy — they drew fully in the bases pass.
+  // Culled to the viewport (crown r43 + sway/wobble fit in 90px).
+  const vx0 = cam.x - 90, vy0 = cam.y - 90, vx1 = cam.x + W / zoom + 90, vy1 = cam.y + H / zoom + 90;
+  ctx.imageSmoothingEnabled = zoomSettled(); // settled frames resample smooth (matches the vector look); mid-gesture frames take the fast nearest path and the crisp smooth frame lands on settle
   for (const t of trees) {
     if (t.kind === "barr") continue;
-    const s1 = Math.sin(t.seed) * 2, s2 = Math.cos(t.seed * 1.3) * 2;
+    if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
     // hit shudder: the whole crown shakes briefly; leaf hits instead set
-    // a slow lingering sway of the foliage (t.leafSway, set in chipTree)
-    const sway = t.leafSway || 0, ph = simT * 8 + t.seed; // game time: sway freezes with pause, like the shudder decay
-    ctx.save();
-    ctx.translate((t.wob || 0) * Math.sin((t.wob || 0) * 25) * 4 + Math.sin(ph) * 7 * sway,
-                  Math.cos(ph * 0.7) * 3 * sway);
-    ctx.fillStyle = "#24521f"; // dark rim so the crown reads against grass
-    ctx.beginPath(); ctx.arc(t.x + s2, t.y - 24, 43, 0, 7); ctx.fill();
-    ctx.fillStyle = "#2f6b2a";
-    ctx.beginPath(); ctx.arc(t.x - 26 + s1, t.y - 6, 30, 0, 7); ctx.fill();
-    ctx.beginPath(); ctx.arc(t.x + 26 - s1, t.y - 6, 30, 0, 7); ctx.fill();
-    ctx.fillStyle = "#3a7d33";
-    ctx.beginPath(); ctx.arc(t.x + s2, t.y - 24, 39, 0, 7); ctx.fill();
-    ctx.fillStyle = "#4c9440";
-    ctx.beginPath(); ctx.arc(t.x - 8 + s2, t.y - 33, 20, 0, 7); ctx.fill();
-    ctx.restore();
+    // a slow lingering sway of the foliage (t.leafSway, set in chipTree).
+    // Still trees skip all trig (the common case — decay lands exactly 0).
+    let qi = t.qi;
+    if (!(qi >= 0 && qi < 25)) qi = t.qi = isFinite(t.seed) ? (Math.round(Math.sin(t.seed) * 2) + 2) * 5 + (Math.round(Math.cos(t.seed * 1.3) * 2) + 2) : 12; // a corrupt tree (non-finite seed, trashed qi) must never kill the canopy pass: one bad drawImage throws, aborts every later canopy AND the frame loop. Fall back to the mid variant instead.
+    const sway = t.leafSway || 0, wob = t.wob || 0;
+    if (sway === 0 && wob === 0) {
+      ctx.drawImage(treeCanSpr[qi], t.x + TBC_X, t.y + TBC_Y, TBC_W, TBC_H);
+      continue;
+    }
+    const ph = simT * 8 + t.seed; // game time: sway freezes with pause, like the shudder decay
+    const ox = wob * Math.sin(wob * 25) * 4 + Math.sin(ph) * 7 * sway;
+    const oy = Math.cos(ph * 0.7) * 3 * sway;
+    ctx.drawImage(treeCanSpr[qi], t.x + ox + TBC_X, t.y + oy + TBC_Y, TBC_W, TBC_H);
   }
+  ctx.imageSmoothingEnabled = false;
 }
 let lastPaint = 0;
 let lastBarrPlant = null; // drag-chaining anchor: successful plants link into lines
@@ -1726,7 +1973,7 @@ function paintAt(x, y) {
       }
     }
     const t = plantBarr(x, y);
-    if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (selBarr) selectBarr(null); if (strokeNew) strokeNew.push({ arr: trees, o: t }); }
+    if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (strokeNew) strokeNew.push({ arr: trees, o: t }); }
     return;
   }
   const def = UNIT_DEFS[brush.unit];
@@ -1948,6 +2195,11 @@ function step(dt) {
   // the sticky check + kill-triggered instant reacquire keep targeting
   // responsive while the periodic O(n) rescan thins out
   const retScale = Math.min(2.5, 1 + units.length / 250) * (lodSimple ? 2 : 1);
+  // static-cover grid for the body-collision loop below (single-cell query =
+  // every tree that can touch the unit, in trees order — identical pushouts
+  // at O(occupancy) instead of O(cover)). Built once per step here; the
+  // bullet loop later reuses the same cached grid.
+  const tgU = treeGridGet();
   // cover occupancy + focus-fire counts were snapshotted in the grid pass above
   for (const u of units) {
     if (u.hp <= 0) continue;
@@ -1975,11 +2227,16 @@ function step(dt) {
       if (u.vaultT <= 0) {
         // touchdown: land with a soft thud, unless still over concrete — then
         // stay airborne over the next wall instead of landing inside it (one
-        // smooth flight across chains/corners, not hop-grind-hop)
+        // smooth flight across chains/corners, not hop-grind-hop).
+        // Single-cell cover query: any wall whose capsule reaches the unit's
+        // cell is tested — same boolean as the old full wall scan.
         let deep = false;
         const dl = BARR_HW + def.radius * 0.7;
-        for (const w of wallSegs()) {
-          if (segDist(u.x, u.y, w.x1, w.y1, w.x2, w.y2) < dl) { deep = true; break; }
+        const cellV = tgU.get(tgk(u.x, u.y));
+        if (cellV) for (const t of cellV) {
+          if (t.kind !== "barr") continue;
+          const s = barrSeg(t);
+          if (segDist(u.x, u.y, s[0], s[1], s[2], s[3]) < dl) { deep = true; break; }
         }
         const dur = u.vaultDur || 0.65;
         if (deep && dur < 1.6) { u.vaultT = 0.3; u.vaultDur = dur + 0.3; }
@@ -1998,10 +2255,14 @@ function step(dt) {
       } else if (u.vaultT < 0.35) {
         // running out of air while still over concrete: top up the hop before
         // it expires, so the lift eases back up instead of popping on landing
+        // (same single-cell query as the touchdown check above).
         const dl = BARR_HW + def.radius * 0.7;
         let deep = false;
-        for (const w of wallSegs()) {
-          if (segDist(u.x, u.y, w.x1, w.y1, w.x2, w.y2) < dl) { deep = true; break; }
+        const cellV2 = tgU.get(tgk(u.x, u.y));
+        if (cellV2) for (const t of cellV2) {
+          if (t.kind !== "barr") continue;
+          const s = barrSeg(t);
+          if (segDist(u.x, u.y, s[0], s[1], s[2], s[3]) < dl) { deep = true; break; }
         }
         const dur = u.vaultDur || 0.65;
         if (deep && dur < 1.6) { u.vaultDur = dur + (0.35 - u.vaultT); u.vaultT = 0.35; }
@@ -2203,8 +2464,9 @@ function step(dt) {
           for (const t of trees) {
             const rx = t.x - u.x, ry = t.y - u.y;
             if (rx > 300 || rx < -300 || ry > 300 || ry < -300) continue;
-            const du = Math.sqrt(rx * rx + ry * ry);
-            if (du > 300 || du < 30) continue;
+            const dq = rx * rx + ry * ry;
+            if (dq > 300 * 300 || dq < 30 * 30) continue;
+            const du = Math.sqrt(dq);
             const along = rx * exa + ry * eya;
             if (along < 50) continue;
             const lat = Math.abs(rx * eya - ry * exa);
@@ -2264,6 +2526,13 @@ function step(dt) {
       }
       else if (d > pref + 14) { mvx = dx / d * 0.85 + oxp * u.strafeDir * 0.4; mvy = dy / d * 0.85 + oyp * u.strafeDir * 0.4; u.moving = true; if (u.kind === "sniper") standSniper = true; }
       else if (d < pref - 14) {
+        // crouch shots first: a loaded sniper holding a firing solution
+        // plants and shoots instead of backing off — the hold below keeps
+        // the range honest once the shot is away, and blocked lanes still
+        // stand us up to relocate.
+        const snipePlant2 = u.kind === "sniper" && engaged && !u.allyBlock;
+        if (snipePlant2) { mvx = 0; mvy = 0; u.moving = false; }
+        else {
         mvx = -dx / d * 0.7 + oxp * u.strafeDir * 0.5; mvy = -dy / d * 0.7 + oyp * u.strafeDir * 0.5;
         // snipers open range toward cover and plant when shielded, instead
         // of backing blindly into walls (see hold branch)
@@ -2277,7 +2546,8 @@ function step(dt) {
           if ((u.x < 50 && mvx < 0) || (u.x > FW - 50 && mvx > 0)) mvx = 0;
           if ((u.y < 50 && mvy < 0) || (u.y > FH - 50 && mvy > 0)) mvy = 0;
         }
-        u.moving = true;
+        if (!snipePlant2) u.moving = true;
+        }
       }
       else {
         mvx = oxp * u.strafeDir * sMag + dx / d * (d - pref) * 0.05;
@@ -2292,10 +2562,18 @@ function step(dt) {
         let cv = u.kind === "sniper" ? sniperCover(u, dx, dy, d, false) : seekCover(u, dx, dy, d);
         if (!cv && u.kind === "sniper") cv = sniperCampTree(u, dx, dy, d);
         if (cv) {
+          // crouch shots first: a sniper holding a good firing solution
+          // plants and takes the 100%-precision shot instead of sidling to
+          // the trunk. Relocation still happens whenever it must — blocked
+          // lanes stand us up below, pressure/range/kite branches never
+          // reach this gate.
+          const snipePlant = u.kind === "sniper" && engaged && !u.allyBlock;
           if (cv.go || cv.push) {
-            mvx += cv.cx * 1.4; mvy += cv.cy * 1.4;
-            if (u.kind === "sniper") standSniper = true; // sidling to the trunk happens standing
-            if (cv.vd < 70) { mvx *= 0.5; mvy *= 0.5; } // close in: settle toward the trunk
+            if (!snipePlant) {
+              mvx += cv.cx * 1.4; mvy += cv.cy * 1.4;
+              if (u.kind === "sniper") standSniper = true; // sidling to the trunk happens standing
+              if (cv.vd < 70) { mvx *= 0.5; mvy *= 0.5; } // close in: settle toward the trunk
+            } else u.moving = false; // holding the shot: stay still so the crouch builds
           }
           if (cv.inCover) { u.coverHold = true; mvx = cv.cx * 0.8; mvy = cv.cy * 0.8; } // planted: home onto the spot
         }
@@ -2326,22 +2604,31 @@ function step(dt) {
           blx = tx0 * sgn; bly = ty0 * sgn;
         } else {
           let bw = null, bd = Infinity;
-          // broadphase on the wall center first (probe reaches 36px, wall
-          // half-length 24, trigger 23 — nothing past 84px can qualify),
-          // then one exact segment test per nearby wall
-          for (const w of wallSegs()) {
-            const crx = w.t.x - u.x, cry = w.t.y - u.y;
+          // 5x5 cover-grid query (every wall centered within ±84px reaches
+          // the queried cells): same min-distance winner as the old scan.
+          const rcx = ((u.x / TGS) | 0), rcy = ((u.y / TGS) | 0);
+          for (let rx = rcx - 2; rx <= rcx + 2; rx++) for (let ry = rcy - 2; ry <= rcy + 2; ry++) {
+            const rcell = tgU.get((rx + 128) * 2048 + (ry + 128));
+            if (!rcell) continue;
+            for (const rw of rcell) {
+            // broadphase on the wall center first (probe reaches 36px, wall
+            // half-length 24, trigger 23 — nothing past 84px can qualify),
+            // then one exact segment test per nearby wall
+            if (rw.kind !== "barr") continue;
+            const crx = rw.x - u.x, cry = rw.y - u.y;
             if (crx > 84 || crx < -84 || cry > 84 || cry < -84) continue;
-            const dd = segSegDist(u.x, u.y, prx, pry, w.x1, w.y1, w.x2, w.y2);
-            if (dd < bd) { bd = dd; bw = w; }
+            const rs = barrSeg(rw);
+            const dd = segSegDist(u.x, u.y, prx, pry, rs[0], rs[1], rs[2], rs[3]);
+            if (dd < bd) { bd = dd; bw = rw; }
+            }
           }
           if (bw && bd < BARR_HW + def.radius + 2) {
             blk = bw;
             // committed slide to the blocker's nearer end (stable across
             // jinks — the flip-flop is what stranded advancers before)
-            const bal = (u.x - bw.t.x) * bw.ax + (u.y - bw.t.y) * bw.ay;
+            const bal = (u.x - bw.x) * bw.sax + (u.y - bw.y) * bw.say;
             const sgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
-            blx = bw.ax * sgn; bly = bw.ay * sgn;
+            blx = bw.sax * sgn; bly = bw.say * sgn;
           }
         }
         if (blk) {
@@ -2349,9 +2636,9 @@ function step(dt) {
           // can't pin a stale sign forever): flips stop undoing the escape.
           // A new blocker engages only after its own 3-tick grind — units
           // that are moving fine keep their branch steering.
-          // NOTE: key on the live wall object (blk.t), not the per-step cache wrapper:
-          // wrappers are rebuilt every step, so an index/wrapper key would go stale.
-          const key = blk === "edge" ? "e" : blk.t;
+          // NOTE: key on the live wall object itself (stable across steps —
+          // walls never move), so an index key can't go stale on edit.
+          const key = blk === "edge" ? "e" : blk;
           if (u.escKey !== key) {
             if (u.escStuckX === undefined) { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; }
             else if (Math.hypot(u.x - u.escStuckX, u.y - u.escStuckY) < 6) u.escStuck++;
@@ -2366,6 +2653,50 @@ function step(dt) {
           }
         } else { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
       } else if ((mvx * exx + mvy * eyy) <= 0.1) { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
+      // trunk-grind slide: pushing straight into a trunk face (advancing on
+      // the threat or giving ground away from it) grinds forever — the weave
+      // and strafe flips are symmetric, so net lateral motion is zero while
+      // the pushout eats the radial part (measured 30s+ on a lone trunk, two
+      // approach angles never clearing at all). Same 4-tick/6px grind
+      // detector and commit shape as the wall/edge slide above: slide along
+      // the trunk tangent (stable personality side) with a nudge toward the
+      // goal, so the unit rounds the wood instead of jittering on its face.
+      // Active wall/edge slides keep priority (their key wins); tucked
+      // holders never slide off their tree, nor do cornered last-stands,
+      // rolls or vaults. Contact is re-checked live (not trusted stale), so
+      // a freed unit resumes branch steering at once.
+      if (retreatSlide && !cornered && !u.coverHold && u.rollT <= 0 && !u.vaultT &&
+          (u.escKey === null || u.escKey === undefined || (u.trunkTouch && u.escKey === u.trunkTouch))) {
+        const advInto = (mvx * dx + mvy * dy) / d > 0.3, retInto = (mvx * exx + mvy * eyy) > 0.3;
+        let tk = null, tkx = 0, tky = 0, tgx = 0, tgy = 0;
+        if (advInto || retInto) {
+          const tt = u.trunkTouch;
+          if (tt && treeSet.has(tt)) {
+            const qdx = u.x - tt.x, qdy = u.y - (tt.y + 15);
+            const qd2 = qdx * qdx + qdy * qdy, qr = TRUNK_R + def.radius * 0.7 + 6;
+            if (qd2 < qr * qr && qd2 > 0.01) {
+              const qd = Math.sqrt(qd2), sgn = (u.coverSide || 1);
+              tkx = -qdy / qd * sgn; tky = qdx / qd * sgn;
+              if (advInto) { tgx = dx / d; tgy = dy / d; } else { tgx = exx; tgy = eyy; }
+              tk = tt;
+            }
+          }
+        }
+        if (tk) {
+          // engagement is sustained contact itself (counted above): positional
+          // pushouts leave velocity high, so a displacement detector stays
+          // blind while the unit rattles on the bark. Twenty steps (~0.3s)
+          // is well past any brush-past, and a false engage still helps —
+          // the slide pushes toward the goal anyway.
+          if (u.escKey !== tk && (u.trunkN || 0) >= 20) { u.escKey = tk; u.escT = 1.0; u.escSx = tkx; u.escSy = tky; u.escGx = tgx; u.escGy = tgy; }
+          if (u.escKey === tk) {
+            u.escT -= dt;
+            if (u.escT <= 0) { u.escT = 1.0; u.escSx = tkx; u.escSy = tky; u.escGx = tgx; u.escGy = tgy; }
+            mvx = u.escSx * 1.2 + u.escGx * 0.15; mvy = u.escSy * 1.2 + u.escGy * 0.15;
+            u.moving = true;
+          }
+        } else if (!u.escKey || (u.trunkTouch && u.escKey === u.trunkTouch)) { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
+      }
       // walk-around for shielding walls: an advance straight into mid-span
       // dies on the concrete (engaged vaults stay suppressed) and the weave
       // only paces the face forever — so sidestep toward the wall's nearer
@@ -2377,21 +2708,27 @@ function step(dt) {
       // slide doesn't chatter on/off rounding the wall's end.
       if (retreatSlide && !u.coverHold && u.rollT <= 0 && !u.vaultT && !cornered && (mvx * dx + mvy * dy) / d > 0.3) {
         let bw3 = null, bd3 = Infinity;
-        // NOTE: advKey stores the wall object (w.t), not the per-step cache wrapper:
-        // wallSegs() rebuilds its wrapper objects every step, so a stored wrapper
-        // would never === a fresh one and the wider continue-lane below would be dead.
+        // advKey stores the wall object itself (stable across steps); the
+        // 5x5 cover-grid query around the unit reaches every wall centered
+        // within 75px, so the min-distance winner matches the old full scan
+        // (dupes across cells can't change a strict min).
         const contW = (u.advKey !== undefined && u.advKey !== null) ? u.advKey : null;
-        for (const w of wallSegs()) {
+        const gcx = ((u.x / TGS) | 0), gcy = ((u.y / TGS) | 0);
+        for (let gx = gcx - 2; gx <= gcx + 2; gx++) for (let gy = gcy - 2; gy <= gcy + 2; gy++) {
+          const cell = tgU.get((gx + 128) * 2048 + (gy + 128));
+          if (!cell) continue;
+          for (const cw of cell) {
           // barrShield on the cached segment: the wall crosses the
           // unit->threat lane (center + both ends, like barrShield).
           // Continuing a slide uses a wider lane (HW+12) than engaging
           // one (HW+3), so rounding the end doesn't chatter on/off.
-          const cw = w.t;
+          if (cw.kind !== "barr") continue;
+          const s = barrSeg(cw);
           const ndx = u.x - cw.x, ndy = u.y - cw.y;
           if (ndx * ndx + ndy * ndy > 75 * 75) continue; // too far to matter (also releases a slide gone past)
-          const lat = (contW === w.t) ? BARR_HW + 12 : BARR_HW + 3;
+          const lat = (contW === cw) ? BARR_HW + 12 : BARR_HW + 3;
           let hit3 = false;
-          const px3 = [w.x1, w.x2, (w.x1 + w.x2) / 2], py3 = [w.y1, w.y2, (w.y1 + w.y2) / 2];
+          const px3 = [s[0], s[2], (s[0] + s[2]) / 2], py3 = [s[1], s[3], (s[1] + s[3]) / 2];
           for (let qi = 0; qi < 3 && !hit3; qi++) {
             const rx = px3[qi] - u.x, ry = py3[qi] - u.y;
             const a3 = (rx * dx + ry * dy) / d;
@@ -2399,14 +2736,15 @@ function step(dt) {
             if (Math.abs(rx * dy - ry * dx) / d < lat) hit3 = true;
           }
           if (!hit3) continue;
-          const dd = segDist(u.x, u.y, w.x1, w.y1, w.x2, w.y2);
-          if (dd < bd3) { bd3 = dd; bw3 = w; }
+          const dd = segDist(u.x, u.y, s[0], s[1], s[2], s[3]);
+          if (dd < bd3) { bd3 = dd; bw3 = cw; }
+          }
         }
         if (bw3) {
-          u.advKey = bw3.t;
-          const bal = (u.x - bw3.t.x) * bw3.ax + (u.y - bw3.t.y) * bw3.ay;
+          u.advKey = bw3;
+          const bal = (u.x - bw3.x) * bw3.sax + (u.y - bw3.y) * bw3.say;
           const sgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
-          mvx += bw3.ax * sgn * 1.0; mvy += bw3.ay * sgn * 1.0;
+          mvx += bw3.sax * sgn * 1.0; mvy += bw3.say * sgn * 1.0;
           u.moving = true;
         } else u.advKey = null;
       } else u.advKey = null;
@@ -2441,33 +2779,19 @@ function step(dt) {
         const lty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
         const lex = leadX - ltx, ley = leadY - lty, ll2 = lex * lex + ley * ley;
         if (ll2 > 1) {
-          const lrr = (TRUNK_R + 2) * (TRUNK_R + 2);
-          // lane AABB (muzzle->lead, expanded by the trunk radius): trees
-          // outside it can't touch the lane — same result, fewer projections
-          const lbx0 = Math.min(ltx, leadX) - 16, lbx1 = Math.max(ltx, leadX) + 16;
-          const lby0 = Math.min(lty, leadY) - 16, lby1 = Math.max(lty, leadY) + 16;
-          for (const t of trees) {
-            // the target's tree is a legitimate target only while it's
-            // actively tucked behind it (coverHold): chipping guarding wood
-            // is the counterplay. A mere assignment (target out in the open
-            // elsewhere) screens the lane like any other trunk — hold fire
-            // and sidestep instead of mag-dumping bark at nothing.
-            if (t === u.tx.coverTree && u.tx.coverHold) continue;
-            if (t.kind === "barr") continue; // concrete never screens a lane by itself (see the bullet loop)
-            if (t.x < lbx0 || t.x > lbx1) continue;
-            const tby = t.y + 15;
-            if (tby < lby0 || tby > lby1) continue;
-            const lrx = t.x - ltx, lry = tby - lty;
-            let ls = (lrx * lex + lry * ley) / ll2;
-            ls = ls < 0 ? 0 : (ls > 1 ? 1 : ls);
-            const lpx = lrx - lex * ls, lpy = lry - ley * ls;
-            if (lpx * lpx + lpy * lpy < lrr) { laneBlocked = true; break; }
-          }
+          // the target's own tree is a legitimate target only while it's
+          // actively tucked behind it (coverHold) — chipping guarding wood
+          // is the counterplay, passed as the exempt tree below.
+          const exemptL = (u.tx.coverTree && u.tx.coverHold) ? u.tx.coverTree : null;
+          if (laneBlocker(tgU, ltx, lty, lex, ley, ll2, (TRUNK_R + 2) * (TRUNK_R + 2), exemptL)) laneBlocked = true;
         }
       }
       if (laneBlocked) {
         standSniper = true; // stand up to relocate for a clear lane
-        mvx += oxp * u.strafeDir * 1.2; mvy += oyp * u.strafeDir * 1.2;
+        // committed side (personality, not the flipping orbit): the flip-flop
+        // undoes the walk, so two duelists across a trunk from each other pace
+        // its faces forever instead of rounding it and fighting.
+        mvx += oxp * (u.coverSide || 1) * 1.2; mvy += oyp * (u.coverSide || 1) * 1.2;
         u.moving = true;
       }
       // (soldiers) shooting into a covered target's wall: concrete only stops
@@ -2496,9 +2820,8 @@ function step(dt) {
         }
         if (wallBlocked) {
           // committed slide to the blocker's nearer end (stable across jinks)
-          const bs = barrSeg(wbWt);
-          let bax = bs[2] - bs[0], bay = bs[3] - bs[1];
-          const bl = Math.max(1, Math.hypot(bax, bay)); bax /= bl; bay /= bl;
+          barrSeg(wbWt); // baked axis (fills lazily for old saves)
+          const bax = wbWt.sax, bay = wbWt.say;
           const bdx = u.x - wbWt.x, bdy = u.y - wbWt.y;
           const bal = bdx * bax + bdy * bay;
           const bsgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
@@ -2519,24 +2842,14 @@ function step(dt) {
         const tty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
         const tex = leadX - ttx, tey = leadY - tty, tl2 = tex * tex + tey * tey;
         if (tl2 > 1) {
-          const trr = (TRUNK_R + 2) * (TRUNK_R + 2);
-          const tbx0 = Math.min(ttx, leadX) - 16, tbx1 = Math.max(ttx, leadX) + 16;
-          const tby0 = Math.min(tty, leadY) - 16, tby1 = Math.max(tty, leadY) + 16;
-          for (const t of trees) {
-            if (t.kind === "barr") continue; // concrete keeps its own rule above
-            if (t === u.tx.coverTree && u.tx.coverHold) continue;
-            if (t.x < tbx0 || t.x > tbx1) continue;
-            const tryy = (t.y + 15);
-            if (tryy < tby0 || tryy > tby1) continue;
-            const trx = t.x - ttx, try2 = tryy - tty;
-            let ts = (trx * tex + try2 * tey) / tl2;
-            ts = ts < 0 ? 0 : (ts > 1 ? 1 : ts);
-            const tpx = trx - tex * ts, tpy = try2 - tey * ts;
-            if (tpx * tpx + tpy * tpy < trr) { trunkBlocked = true; break; }
-          }
+          // same exempt rule as the sniper lane-block above.
+          const exemptT = (u.tx.coverTree && u.tx.coverHold) ? u.tx.coverTree : null;
+          if (laneBlocker(tgU, ttx, tty, tex, tey, tl2, (TRUNK_R + 2) * (TRUNK_R + 2), exemptT)) trunkBlocked = true;
         }
         if (trunkBlocked) {
-          mvx += oxp * u.strafeDir * 1.2; mvy += oyp * u.strafeDir * 1.2;
+          // committed side, same as the sniper lane-block above: the flipping
+          // orbit paces the trunk forever instead of rounding it.
+          mvx += oxp * (u.coverSide || 1) * 1.2; mvy += oyp * (u.coverSide || 1) * 1.2;
           u.moving = true;
         }
       }
@@ -2730,17 +3043,27 @@ function step(dt) {
         const mll = Math.sqrt(mvx * mvx + mvy * mvy);
         if (mll > 0.3) {
           let bw = null, bd = Infinity;
-          for (const w of wallSegs()) {
-            const crx = w.t.x - u.x, cry = w.t.y - u.y;
+          // 5x5 cover-grid query (every wall centered within ±60px reaches
+          // the queried cells): same nearest wall as the old full scan.
+          const bcx = ((u.x / TGS) | 0), bcy = ((u.y / TGS) | 0);
+          for (let bx = bcx - 2; bx <= bcx + 2; bx++) for (let by = bcy - 2; by <= bcy + 2; by++) {
+            const bcell = tgU.get((bx + 128) * 2048 + (by + 128));
+            if (!bcell) continue;
+            for (const bt of bcell) {
+            if (bt.kind !== "barr") continue;
+            const crx = bt.x - u.x, cry = bt.y - u.y;
             if (crx > 60 || crx < -60 || cry > 60 || cry < -60) continue;
-            const dd = segDist(u.x, u.y, w.x1, w.y1, w.x2, w.y2);
-            if (dd < bd) { bd = dd; bw = w; }
+            const bs = barrSeg(bt);
+            const dd = segDist(u.x, u.y, bs[0], bs[1], bs[2], bs[3]);
+            if (dd < bd) { bd = dd; bw = bt; }
+            }
           }
           if (bw && bd < BARR_HW + def.radius + 14) {
-            const ex = bw.x2 - bw.x1, ey = bw.y2 - bw.y1, L2 = (ex * ex + ey * ey) || 1;
-            let ps = ((u.x - bw.x1) * ex + (u.y - bw.y1) * ey) / L2;
+            barrSeg(bw); // baked segment + axis (fills lazily for old saves)
+            const ex = bw.sx2 - bw.sx1, ey = bw.sy2 - bw.sy1, L2 = (ex * ex + ey * ey) || 1;
+            let ps = ((u.x - bw.sx1) * ex + (u.y - bw.sy1) * ey) / L2;
             ps = ps < 0 ? 0 : (ps > 1 ? 1 : ps);
-            let pdx = u.x - (bw.x1 + ex * ps), pdy = u.y - (bw.y1 + ey * ps);
+            let pdx = u.x - (bw.sx1 + ex * ps), pdy = u.y - (bw.sy1 + ey * ps);
             const pl = Math.sqrt(pdx * pdx + pdy * pdy);
             if (pl >= 1 && -(mvx * pdx + mvy * pdy) / (pl * mll) > 0.55) {
               pdx /= pl; pdy /= pl;
@@ -2805,12 +3128,14 @@ function step(dt) {
     }
     const r = def.radius;
     u.x = Math.max(r, Math.min(FW - r, u.x)); u.y = Math.max(r, Math.min(FH - r, u.y));
-    for (const t of trees) { // trunks are solid (the canopy overhangs, the trunk blocks); barricades vault: mid-span crossings hop over, ends deflect
-      // broadphase: a wall's closest approach is within 24 (half-length) +
-      // 17 (BARR_HW + radius) of its center, a trunk's within ~23 of its
-      // base — anything past 48px can't touch this unit, skip the segDist
-      const bdx = t.x - u.x; if (bdx > 48 || bdx < -48) continue;
-      const bdy = (t.kind === "barr" ? t.y : t.y + 15) - u.y; if (bdy > 52 || bdy < -52) continue;
+    u.trunkPrev = u.trunkTouch; u.trunkTouch = null; // this step's contact, counted below
+    // Body vs cover: trunks are solid (the canopy overhangs, the trunk
+    // blocks); barricades vault (mid-span crossings hop over, ends deflect).
+    // Candidates come from the static-cover grid (unit's own cell holds every
+    // tree whose shape reaches it, in trees order) — the exact tests below
+    // decide, so pushouts are identical to the old full scan.
+    const cellU = tgU.get(tgk(u.x, u.y));
+    if (cellU) for (const t of cellU) {
       if (t.kind === "barr") {
         if (u.vaultT > 0) continue; // mid-vault: passing over the wall, no collision
         const s = barrSeg(t);
@@ -2845,6 +3170,26 @@ function step(dt) {
           const vTx = u.tx;
           const vEng = vTx && vTx.hp > 0 &&
             (vTx.x - u.x) * (vTx.x - u.x) + (vTx.y - u.y) * (vTx.y - u.y) < def.range * def.range;
+          // dodge-rolls carry straight over mid-span concrete instead of
+          // pinning against it: the roll is a committed 0.42s dodge (only
+          // exposed units roll — tucked/last-stand units sit out), so unlike
+          // holders it never abandons cover by hopping, and a lateral dodge
+          // keeps its line instead of dying on the wall. End-on rolls still
+          // pin and deflect past the cap like grazes (the post-roll freshRoll
+          // window below earns the hop for those after a real grind).
+          if (u.rollT > 0 && !u.coverHold && ps > 0.06 && ps < 0.94 &&
+              vsp > 30 && intoWall > Math.max(20, vsp * 0.5) &&
+              !(u.vaultLockT > 0 && (u.x - (u.vaultLockX || 0)) * (u.rollDx || 0) + (u.y - (u.vaultLockY || 0)) * (u.rollDy || 0) < -8 &&
+                Math.hypot(u.x - (u.vaultLockX || 0), u.y - (u.vaultLockY || 0)) < 55) &&
+              ((u.vaultCd || 0) <= 0 || dd < dmin - 3)) {
+            u.rollT = 0; u.rollCd = 1.5 + Math.random() * 2; u.rollEnd = simT;
+            u.vaultT = 0.65; u.vaultDur = 0.65; u.pushT = 0;
+            u.vaultDx = u.rollDx; u.vaultDy = u.rollDy;
+            u.vaultCd = 1.2; u.landT = 0;
+            for (let k = 0; k < 4; k++) // scuffed dust kicking off the hop
+              parts.push({ x: u.x + (Math.random()*8-4), y: u.y + 18, vx: (Math.random()*50-25), vy: -20 - Math.random()*30, life: 0.35, max: 0.35, c: "rgba(190,170,130,0.55)", s: 2 });
+            continue;
+          }
           if (u.rollT <= 0 && !u.coverHold && !(vEng && barrShield(u, t)) &&
               !(u.vaultLockT > 0 && (u.x - (u.vaultLockX || 0)) * (u.vaultLockDx || 0) + (u.y - (u.vaultLockY || 0)) * (u.vaultLockDy || 0) < -8 &&
                 Math.hypot(u.x - (u.vaultLockX || 0), u.y - (u.vaultLockY || 0)) < 55) &&
@@ -2875,8 +3220,11 @@ function step(dt) {
         let nx = tdx, ny = tdy;
         if (td < 0.01) { nx = 1; ny = 0; td = 1; } // dead-center on the trunk: shove off east
         u.x += nx / td * push; u.y += ny / td * push;
+        u.trunkTouch = t; // fresh trunk contact: read by the grind slide next step
+        if (u.trunkPrev === t) u.trunkN = (u.trunkN || 0) + 1; else u.trunkN = 1;
       }
     }
+    if (!u.trunkTouch) u.trunkN = 0; // contact broke: the grind count restarts
     if (def.update) def.update(u, dt, { units, bullets });
   }
   // spawners tick down and summon while the battle runs (frozen while paused):
@@ -2900,6 +3248,7 @@ function step(dt) {
   // Fast rounds move in <=10px hops so they can't tunnel through thin cover
   // (a 20px wall) or flesh on big steps — at 4x speed a sniper round would
   // otherwise cross 95px per step and walls would stop nothing.
+  const tg = treeGridGet();
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     b.life -= dt;
@@ -2916,20 +3265,28 @@ function step(dt) {
       // exact shot) — an empty wall is just concrete the round flies past.
       // Hits only chip bark/concrete — nothing takes damage or falls.
       // (brief grace so a muzzle inside the wood doesn't insta-hit).
-      if (b.age > 0.06) {
-        for (const t of trees) {
-          if (t.kind === "barr") {
-            if (barrHit(t, b.x, b.y)) {
-              let guard = false;
-              for (const u2 of units) {
-                if (u2.hp <= 0 || u2.coverTree !== t || !u2.coverHold) continue;
-                if (barrBetween(t, u2, b)) { guard = true; break; }
+        if (b.age > 0.06) {
+          const cell = tg.get(tgk(b.x, b.y));
+          if (cell) for (const t of cell) {
+            if (t.kind === "barr") {
+              if (barrHit(t, b.x, b.y)) {
+                if (wallGuardsTick !== stepTick) {
+                  wallGuardsTick = stepTick; wallGuards = new Map();
+                  for (const u2 of units) {
+                    if (u2.hp <= 0 || !u2.coverHold || !u2.coverTree) continue;
+                    let a = wallGuards.get(u2.coverTree);
+                    if (!a) { a = []; wallGuards.set(u2.coverTree, a); }
+                    a.push(u2);
+                  }
+                }
+                let guard = false;
+                const gs = wallGuards.get(t);
+                if (gs) for (const u2 of gs) { if (barrBetween(t, u2, b)) { guard = true; break; } }
+                if (guard) { chipTree(t, b.x, b.y, b); hitTree = true; dead = true; break; }
+                continue; // nobody sheltering behind it: straight through the concrete
               }
-              if (guard) { chipTree(t, b.x, b.y, b); hitTree = true; dead = true; break; }
-              continue; // nobody sheltering behind it: straight through the concrete
+              continue;
             }
-            continue;
-          }
           const tdx = t.x - b.x, tdy = (t.y + 15) - b.y, trr = TRUNK_R + 1;
           if (tdx*tdx + tdy*tdy < trr*trr) { chipTree(t, b.x, b.y, b); hitTree = true; dead = true; break; }
         }
@@ -3046,23 +3403,13 @@ function step(dt) {
     if (corpses[i].age > 30) corpses.splice(i, 1);
   }
   if (corpses.length > 500) corpses.splice(0, corpses.length - 500);
-  // gunshot holes vanish after 10s, fading over the last 2s.
-  // Fading holes leave the baked layer and are drawn per-frame; layer
-  // rebuilds are throttled (at most ~1/sec) so mass expiries never stall.
-  // A stale bake just double-draws a fading hole slightly brighter for
-  // under a second — invisible — since fading holes also draw live.
-  holeRebuildCd -= dt;
+  // gunshot holes vanish after 10s, fading over the last 2s. All holes draw
+  // live every frame, so expiry is just an array splice — no bake to keep.
   if (holes.length) {
     for (let i = holes.length - 1; i >= 0; i--) {
-      const prev = holes[i].age || 0;
-      const now = prev + dt;
-      holes[i].age = now;
-      if (now > HOLE_LIFE) { holes.splice(i, 1); holeNeedRebuild = true; }
-      else if (prev <= HOLE_SOLID && now > HOLE_SOLID) holeNeedRebuild = true;
+      holes[i].age = (holes[i].age || 0) + dt;
+      if (holes[i].age > HOLE_LIFE) holes.splice(i, 1);
     }
-  }
-  if (holeNeedRebuild && holeRebuildCd <= 0) {
-    resetHoleLayer(); holeNeedRebuild = false; holeRebuildCd = 1.0;
   }
   for (let i = helmets.length - 1; i >= 0; i--) {
     const h = helmets[i];
@@ -3257,6 +3604,8 @@ function buildSprites() {
   paintSniperHatOn(hg2, hw + 4, top, r);
   hatSpr = { c: hc2, w: hw * 2 + 8, h: top + bot, a: hw + 4, b: top };
   buildHoleSprites();
+  buildTreeSprites();
+  buildBarrSprites();
 }
 function paintHelmetOn(g, x, y, r) {
   g.fillStyle = HELMET_DARK;
@@ -3366,8 +3715,11 @@ function unitFrame(u) {
 // Selected spawner gets a white outer ring. Cheap per-spawner canvas work.
 function renderSpawners() {
   if (!spawners.length) return;
+  // Culled to the viewport (selected spawn-ring preview reaches ~130px).
+  const vx0 = cam.x - 130, vy0 = cam.y - 130, vx1 = cam.x + W / zoom + 130, vy1 = cam.y + H / zoom + 130;
   ctx.textAlign = "center";
   for (const sp of spawners) {
+    if (sp.x < vx0 || sp.x > vx1 || sp.y < vy0 || sp.y > vy1) continue;
     const col = FACTIONS[sp.faction] || "#fff";
     ctx.save();
     ctx.globalAlpha = 0.85;
@@ -3413,7 +3765,24 @@ function renderUnits(sorted) {
   // zoomed-out LOD: past ~0.85 the subtlest gun/hand/shadow detail is
   // sub-pixel anyway, so render the cheap path (same as heavy battle)
   const Q = lodSimple || zoom < 0.85;
-  for (i = 0; i < sorted.length; i++) unitFrame(sorted[i]);
+  // Viewport cull: only visible units need frames or layers — off-screen
+  // draws are clipped anyway. Guns/flashes/hands fit in 80px. Culled units
+  // keep their stale _f (never read below: every layer iterates `sorted`).
+  // _f is render-only (step uses the _fsx/_ffx/_fanx perf fields), so skipping
+  // unitFrame here never touches the sim.
+  {
+    const vx0 = cam.x - 80, vy0 = cam.y - 80, vx1 = cam.x + W / zoom + 80, vy1 = cam.y + H / zoom + 80;
+    let vis = null;
+    for (i = 0; i < sorted.length; i++) {
+      u = sorted[i];
+      if (u.x < vx0 || u.x > vx1 || u.y < vy0 || u.y > vy1) continue;
+      unitFrame(u);
+      if (!vis) vis = [];
+      vis.push(u);
+    }
+    if (!vis) return;
+    sorted = vis;
+  }
   // shadows (stay on the ground, un-bobbed; skipped in LOD)
   if (!Q) {
     ctx.fillStyle = "rgba(0,0,0,0.25)";
@@ -3634,12 +4003,15 @@ function renderUnits(sorted) {
 // (suit + limbs + head baked per faction/helmet variant).
 function renderCorpses() {
   let i, c;
+  // Culled to the viewport (pools + bodies fit in 60px).
+  const vx0 = cam.x - 60, vy0 = cam.y - 60, vx1 = cam.x + W / zoom + 60, vy1 = cam.y + H / zoom + 60;
   // blood pools fade fast: full strength to 10s, gone by 12s — long before
   // the body itself fades (25-30s)
   ctx.fillStyle = "rgba(140,20,20,0.5)";
   ctx.beginPath();
   for (i = 0; i < corpses.length; i++) {
     c = corpses[i];
+    if (c.px < vx0 || c.px > vx1 || c.py < vy0 || c.py > vy1) continue;
     if (c.age > 10) continue; // older pools drawn individually below
     ctx.moveTo(c.px + 14, c.py + 6);
     ctx.ellipse(c.px, c.py + 6, 14, 9, 0, 0, 7);
@@ -3647,6 +4019,8 @@ function renderCorpses() {
   ctx.fill();
   for (i = 0; i < corpses.length; i++) {
     c = corpses[i];
+    // pool sits at (px,py) but the body at (x,y): draw if either is visible
+    if ((c.px < vx0 || c.px > vx1 || c.py < vy0 || c.py > vy1) && (c.x < vx0 || c.x > vx1 || c.y < vy0 || c.y > vy1)) continue;
     if (c.age > 10 && c.age <= 12) { // pool fading out ahead of the body
       ctx.globalAlpha = Math.max(0, 1 - (c.age - 10) / 2);
       ctx.fillStyle = "rgba(140,20,20,0.5)";
@@ -3673,7 +4047,9 @@ function renderCorpses() {
 function renderDyingPools() {
   ctx.fillStyle = "rgba(140,20,20,0.5)";
   ctx.beginPath();
+  const vx0 = cam.x - 60, vy0 = cam.y - 60, vx1 = cam.x + W / zoom + 60, vy1 = cam.y + H / zoom + 60;
   for (const d of dying) {
+    if (d.px < vx0 || d.px > vx1 || d.py < vy0 || d.py > vy1) continue;
     const pool = Math.max(0, Math.min(1, d.t / 0.4));
     ctx.moveTo(d.px + 4 + 10 * pool, d.py + 6);
     ctx.ellipse(d.px, d.py + 6, 4 + 10 * pool, 3 + 6 * pool, 0, 0, 7);
@@ -3681,7 +4057,9 @@ function renderDyingPools() {
   ctx.fill();
 }
 function renderDying() {
+  const vx0 = cam.x - 60, vy0 = cam.y - 60, vx1 = cam.x + W / zoom + 60, vy1 = cam.y + H / zoom + 60;
   for (const d of dying) {
+    if (d.x < vx0 || d.x > vx1 || d.y < vy0 || d.y > vy1) continue;
     const sp = (corpseSpr[dispFaction(d.faction)] || corpseSpr.red)[d.kind === "sniper" ? (d.hat ? 2 : 0) : (d.helmet ? 1 : 0)];
     if (!sp) continue;
     ctx.save(); ctx.translate(d.x, d.y); ctx.rotate(d.rot || 0);
@@ -3690,15 +4068,7 @@ function renderDying() {
   }
 }
 function render() {
-  drawGrass();
-  // fading holes (last 2s of life) draw per-frame with alpha; solid ones are baked
-  for (const h of holes) {
-    const age = h.age || 0;
-    if (age <= HOLE_SOLID) continue;
-    ctx.globalAlpha = Math.max(0, 1 - (age - HOLE_SOLID) / HOLE_FADE);
-    drawHoleOn(ctx, h);
-  }
-  ctx.globalAlpha = 1;
+  drawGrass(); // grass tiles + all live holes inside
   renderBarkBits();
   renderLeafBits();
   renderConcBits();
@@ -3712,7 +4082,10 @@ function render() {
   renderSpawners();
   // knocked-off headgear rests on the ground: draw it before the canopies
   // (with the other ground litter) so trees cover hats, not the reverse
+  // Culled to the viewport (hats/helmets fit in 40px).
+  const ex0 = cam.x - 40, ey0 = cam.y - 40, ex1 = cam.x + W / zoom + 40, ey1 = cam.y + H / zoom + 40;
   for (const h of helmets) {
+    if (h.x < ex0 || h.x > ex1 || h.y < ey0 || h.y > ey1) continue;
     if (!helmetSpr) break;
     ctx.globalAlpha = h.t > 25 ? Math.max(0, 1 - (h.t - 25) / 5) : 1;
     ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(h.rot);
@@ -3725,7 +4098,8 @@ function render() {
   // winner ring (ffa last-one-standing)
   if (mode === "ffa" && winner) {
     const au = units.filter(u => u.hp > 0);
-    if (au.length === 1) {
+    // Culled like everything else (ring radius ~23px).
+    if (au.length === 1 && au[0].x > cam.x - 40 && au[0].x < cam.x + W / zoom + 40 && au[0].y > cam.y - 40 && au[0].y < cam.y + H / zoom + 40) {
       ctx.strokeStyle = "gold"; ctx.lineWidth = 3;
       const t = simT * 5; // game time: the pulse freezes with pause, like everything else
       ctx.beginPath(); ctx.arc(au[0].x, au[0].y, 20 + Math.sin(t) * 3, 0, 7); ctx.stroke();
@@ -3733,18 +4107,32 @@ function render() {
   }
   // bullets as tracers: one batched stroke for all trails + one batched
   // fill for all heads (was per-bullet state changes + strokes)
+  // Culled to the viewport (segments fully outside are clipped anyway).
+  const bx0 = cam.x - 8, by0 = cam.y - 8, bx1 = cam.x + W / zoom + 8, by1 = cam.y + H / zoom + 8;
   ctx.lineCap = "round";
   if (bullets.length) {
     ctx.strokeStyle = "rgba(255,240,170,0.9)"; ctx.lineWidth = 2.5;
     ctx.beginPath();
-    for (const b of bullets) { ctx.moveTo(b.x - b.vx * 0.02, b.y - b.vy * 0.02); ctx.lineTo(b.x, b.y); }
+    for (const b of bullets) {
+      const tx0 = b.x - b.vx * 0.02, ty0 = b.y - b.vy * 0.02;
+      if ((b.x < bx0 || b.x > bx1 || b.y < by0 || b.y > by1) && (tx0 < bx0 || tx0 > bx1 || ty0 < by0 || ty0 > by1)) continue;
+      ctx.moveTo(tx0, ty0); ctx.lineTo(b.x, b.y);
+    }
     ctx.stroke();
     ctx.fillStyle = "#fff";
     ctx.beginPath();
-    for (const b of bullets) { ctx.moveTo(b.x + 1, b.y - 1); ctx.rect(b.x - 1, b.y - 1, 2, 2); }
+    for (const b of bullets) { if (b.x < bx0 || b.x > bx1 || b.y < by0 || b.y > by1) continue; ctx.moveTo(b.x + 1, b.y - 1); ctx.rect(b.x - 1, b.y - 1, 2, 2); }
     ctx.fill();
   }
   for (const p of parts) {
+    // sniper vapor trails stretch from (p.x,p.y) to their bullet: cull by
+    // segment bbox so a trail reaching on-screen still draws. Puffs are points.
+    if (p.trail) {
+      let ptx, pty;
+      if (p.b && p.b.trail === p) { ptx = p.b.x; pty = p.b.y; }
+      else { ptx = p.x + Math.cos(p.ang) * p.len; pty = p.y + Math.sin(p.ang) * p.len; }
+      if ((p.x < ex0 || p.x > ex1 || p.y < ey0 || p.y > ey1) && (ptx < ex0 || ptx > ex1 || pty < ey0 || pty > ey1)) continue;
+    } else if (p.x < ex0 || p.x > ex1 || p.y < ey0 || p.y > ey1) continue;
     ctx.globalAlpha = Math.max(0, p.life / p.max);
     if (p.trail) { // focused sniper shot: a faint vapor line that grows with its bullet, fading fast
       const ta = Math.max(0, p.life / p.max);
@@ -3774,77 +4162,104 @@ function render() {
   // plus on demand from input (queueGhost), coalesced to one per frame.
   drawGhost();
 }
+// Cap message under the placement ghost (screen-constant size): dark outline
+// so it reads on grass at any zoom.
+function ghostCapMsg(gx, gy, yOff) {
+  const fs = 15 / zoom;
+  octx.globalAlpha = 1;
+  octx.font = "bold " + fs + "px system-ui, sans-serif";
+  octx.textAlign = "center";
+  const msg = "Can't place any more of that!";
+  octx.lineWidth = Math.max(1, 4 / zoom);
+  octx.strokeStyle = "rgba(10,12,8,0.7)";
+  octx.strokeText(msg, gx, gy + yOff);
+  octx.fillStyle = "#ff6b5e";
+  octx.fillText(msg, gx, gy + yOff);
+  octx.globalAlpha = 1;
+}
 function drawGhost() {
   ghostQueued = false;
   if (!octx || !ov) return;
   octx.setTransform(1, 0, 0, 1, 0, 0);
   octx.clearRect(0, 0, ov.width, ov.height);
   if (brush.eraser || mouse.x <= 0 || painting) return;
+  coverCounts(); // refresh the cached cap counts (rebuilds only on terrain edits)
+  // at the cap, the ghost for that object turns red and says so: planting
+  // already refuses there, so the cursor warns before the click.
+  const atCap = brush.unit === "tree" ? capWood >= MAX_TREES
+    : brush.unit === "barricade" ? capBarr >= BARR_MAX
+    : (UNIT_DEFS[brush.unit] ? units.length >= MAX_UNITS : false);
+  const RC = "#ff5b4d"; // cap red (replaces the ghost's white accents)
   octx.setTransform(DPR * zoom, 0, 0, DPR * zoom, -cam.x * DPR * zoom, -cam.y * DPR * zoom);
   {
     const gx = mouse.x / zoom + cam.x, gy = mouse.y / zoom + cam.y;
     if (brush.spawner) {
+      const sC = atCap ? RC : (FACTIONS[brush.faction] || "#fff");
       octx.globalAlpha = 0.8;
-      octx.strokeStyle = FACTIONS[brush.faction] || "#fff"; octx.lineWidth = 2; octx.setLineDash([6, 5]);
+      octx.strokeStyle = sC; octx.lineWidth = 2; octx.setLineDash([6, 5]);
       octx.beginPath(); octx.arc(gx, gy, SP_R, 0, 7); octx.stroke();
       octx.setLineDash([]);
       octx.globalAlpha = 0.7;
-      octx.fillStyle = FACTIONS[brush.faction] || "#fff";
+      octx.fillStyle = sC;
       octx.font = "bold 11px system-ui, sans-serif"; octx.textAlign = "center";
       octx.fillText(brush.unit === "sniper" ? "Sn" : "So", gx, gy + 4);
       octx.fillText(`${pendingSp.maxUnits}/${pendingSp.cd}s`, gx, gy + SP_R + 15);
       // spawn ring preview: units will appear on this circle, not the body ring
       octx.globalAlpha = 0.45;
-      octx.strokeStyle = FACTIONS[brush.faction] || "#fff"; octx.lineWidth = 1.5; octx.setLineDash([4, 4]);
+      octx.strokeStyle = sC; octx.lineWidth = 1.5; octx.setLineDash([4, 4]);
       octx.beginPath(); octx.arc(gx, gy, Math.max(10, pendingSp.spawnR || 34), 0, 7); octx.stroke();
       octx.setLineDash([]);
       octx.globalAlpha = 1;
+      if (atCap) ghostCapMsg(gx, gy, Math.max(10, pendingSp.spawnR || 34) + 20);
       return;
     }
     if (brush.unit === "tree") {
       octx.globalAlpha = 0.55;
-      octx.strokeStyle = "#fff"; octx.lineWidth = 1.5; octx.setLineDash([5, 5]);
+      octx.strokeStyle = atCap ? RC : "#fff"; octx.lineWidth = atCap ? 2.5 : 1.5; octx.setLineDash([5, 5]);
       octx.beginPath(); octx.arc(gx, gy, TREE_R + 4, 0, 7); octx.stroke();
       octx.setLineDash([]);
       octx.globalAlpha = 0.85;
-      octx.fillStyle = "#3a7d33";
+      octx.fillStyle = atCap ? "#b04038" : "#3a7d33";
       octx.beginPath(); octx.arc(gx, gy - 24, 39, 0, 7); octx.fill();
-      octx.fillStyle = "#4c9440";
+      octx.fillStyle = atCap ? "#c05348" : "#4c9440";
       octx.beginPath(); octx.arc(gx - 8, gy - 33, 20, 0, 7); octx.fill();
-      octx.strokeStyle = "#5a4026"; octx.lineCap = "round"; octx.lineWidth = 27;
+      octx.strokeStyle = atCap ? "#7a3a30" : "#5a4026"; octx.lineCap = "round"; octx.lineWidth = 27;
       octx.beginPath(); octx.moveTo(gx, gy - 6); octx.lineTo(gx, gy + 36); octx.stroke();
       octx.globalAlpha = 1;
+      if (atCap) ghostCapMsg(gx, gy, 62);
       return;
     }
     if (brush.unit === "barricade") {
       const a = (pendingBarrDir | 0) * Math.PI / 4, ca = Math.cos(a);
       octx.save(); octx.translate(gx, gy); octx.rotate(a);
-      octx.globalAlpha = 0.5; octx.fillStyle = "#b9bdc4";
+      octx.globalAlpha = 0.5; octx.fillStyle = atCap ? "#c07a72" : "#b9bdc4";
       octx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2);
-      octx.globalAlpha = 0.5; octx.fillStyle = "#d5d9df"; // sunlit top face, like the real wall
+      octx.globalAlpha = 0.5; octx.fillStyle = atCap ? "#d98880" : "#d5d9df"; // sunlit top face, like the real wall
       octx.fillRect(-BARR_HALF + 3, -BARR_HW + 4, BARR_HALF * 2 - 6, BARR_HW * 2 - 8);
       const gUp = ca > 0 ? ca : 0, gDn = ca < 0 ? -ca : 0; // wash the up-facing long edge
-      octx.fillStyle = "#fff";
+      octx.fillStyle = atCap ? RC : "#fff";
       if (gUp > 0.01) { octx.globalAlpha = 0.35 * gUp; octx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, 3); }
       if (gDn > 0.01) { octx.globalAlpha = 0.35 * gDn; octx.fillRect(-BARR_HALF, BARR_HW - 3, BARR_HALF * 2, 3); }
       octx.globalAlpha = 0.8;
-      octx.strokeStyle = "#fff"; octx.lineWidth = 1.5; octx.setLineDash([5, 4]);
+      octx.strokeStyle = atCap ? RC : "#fff"; octx.lineWidth = atCap ? 2.5 : 1.5; octx.setLineDash([5, 4]);
       octx.strokeRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2);
       octx.setLineDash([]);
       octx.restore();
       octx.globalAlpha = 1;
+      if (atCap) ghostCapMsg(gx, gy, 46);
       return;
     }
     const def = UNIT_DEFS[brush.unit];
     if (!def) return;
     octx.globalAlpha = 0.55;
-    octx.strokeStyle = "#fff"; octx.lineWidth = 1.5; octx.setLineDash([5, 5]);
+    octx.strokeStyle = atCap ? RC : "#fff"; octx.lineWidth = atCap ? 2.5 : 1.5; octx.setLineDash([5, 5]);
     octx.beginPath(); octx.arc(gx, gy, def.range, 0, 7); octx.stroke();
     octx.setLineDash([]);
     octx.globalAlpha = 0.7;
-    octx.fillStyle = FACTIONS[brush.faction];
+    octx.fillStyle = atCap ? RC : FACTIONS[brush.faction];
     octx.beginPath(); octx.arc(gx, gy, def.radius, 0, 7); octx.fill();
     octx.globalAlpha = 1;
+    if (atCap) ghostCapMsg(gx, gy, def.radius + 26);
   }
 }
 
@@ -3852,11 +4267,38 @@ function drawGhost() {
 let last = performance.now(), barT = 0;
 document.addEventListener("visibilitychange", () => { if (!document.hidden) last = performance.now(); });
 let gen = 0, stallCount = 0, lastTickSeen = -1;
+const fpsEl = document.getElementById("fps");
+let fpsFrames = 0, fpsTime = 0, fpsLow = false; // half-second average; red below 20, recovers at 25
 function loop(now) {
   if (loop._g !== gen) return; // stale instance from an older start
   window.__tick = (window.__tick || 0) + 1;
-  let dt = Math.min(0.05, (now - last) / 1000); last = now;
-  if (playing) { const sdt = dt * speed; const n = speed > 2 ? 2 : 1; for (let i = 0; i < n; i++) step(sdt / n); }
+  const rdt = (now - last) / 1000; last = now;
+  let dt = Math.min(0.05, rdt);
+  if (rdt > 0) { // fps tracks real wall-clock rate (dt above is clamped for the sim)
+    fpsFrames++; fpsTime += Math.min(rdt, 0.25);
+    if (fpsTime >= 0.5 && fpsEl) {
+      const f = Math.round(fpsFrames / fpsTime);
+      fpsFrames = 0; fpsTime = 0;
+      if (fpsEl._v !== f) { fpsEl._v = f; fpsEl.textContent = f; }
+      const low = fpsLow ? f < 25 : f < 20;
+      if (low !== fpsLow) { fpsLow = low; fpsEl.classList.toggle("low", low); }
+    }
+  }
+  if (playing) {
+    const sdt = dt * speed, n = speed > 2 ? 2 : 1;
+    if (n === 1) step(sdt);
+    else {
+      const f0 = performance.now();
+      step(sdt / 2);
+      // Spiral-of-death governor: in huge battles a single substep can
+      // already cost a full frame (80ms+ measured at ~400 units) — running
+      // the second would saturate the tab's main thread, wedging the whole
+      // tab, not just the game. Skip it when the first blew the frame
+      // budget: the sim momentarily runs ~2x instead of 4x and recovers on
+      // its own. Fast substeps (<12ms) always run both, exactly as before.
+      if (performance.now() - f0 < 12) step(sdt / 2);
+    }
+  }
   // camera: WASD/arrows pan anytime (paused or playing); always clamped
   const pkx = ((keys.KeyD || keys.ArrowRight) ? 1 : 0) - ((keys.KeyA || keys.ArrowLeft) ? 1 : 0);
   const pky = ((keys.KeyS || keys.ArrowDown) ? 1 : 0) - ((keys.KeyW || keys.ArrowUp) ? 1 : 0);
@@ -3879,6 +4321,7 @@ function loop(now) {
 // barricades stay, repaired) — only the restart button clears everything.
 function trashReset() {
   for (const t of trees) { t.scars = []; t.chip = 0; t.wob = 0; t.leafSway = 0; }
+  scarsV++; // repaired trunks (under-layer cache must rebuild)
   // visible feedback for the wipe (R / trash button): a white puff where each
   // cleared unit stood, faction puffs for spawners — so a mass clear never
   // reads as units mysteriously vanishing. Scaled down for huge fields so one
@@ -3886,16 +4329,15 @@ function trashReset() {
   const pn = units.length > 40 ? 2 : 8;
   for (const u of units) poof(u.x, u.y, "#ffffff", pn);
   for (const sp of spawners) poof(sp.x, sp.y, FACTIONS[sp.faction] || "#ffffff", 6);
-  units = []; spawners = []; selSp = null; selBarr = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; corpses = []; helmets = []; holes = []; dying = [];
-  resetHoleLayer();
+  units = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; corpses = []; helmets = []; holes = []; dying = [];
   winner = null; everMulti = false; totalKills = 0;
   refreshBar();
 }
 function clearField() {
-  units = []; trees = []; spawners = []; selSp = null; selBarr = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
-  resetHoleLayer();
+  units = []; trees = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
   winner = null; everMulti = false; totalKills = 0;
   playing = false;
+  bumpTrees();
   refreshBar();
 }
 function restart() {
@@ -3906,11 +4348,11 @@ if (!window.__keyBound) {
   addEventListener("keydown", e => {
     if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) { trashReset(); }
     else if (e.key === " " && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) { e.preventDefault(); togglePlay(); }
-    // Esc cancels a spawner/barricade selection (+ its panel) without
+    // Esc cancels a spawner selection (+ its panel) without
     // touching the picked tool — the keyboard counterpart to tapping empty
     // ground, now that right-click deliberately does nothing
     else if (e.key === "Escape" && !e.repeat) {
-      if (selSp || selBarr) { selSp = null; selBarr = null; hideSpanel(); if (brush.spawner) showSppre(); refreshBar(); }
+      if (selSp) { selSp = null; hideSpanel(); if (brush.spawner) showSppre(); refreshBar(); }
     }
   });
 }
@@ -3940,6 +4382,7 @@ function demo() {
   // kept for console testing (spawn a quick two-army setup); the live
   // battlefield itself always starts empty — see clearField().
   units = []; trees = []; spawners = []; barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; dying = [];
+  bumpTrees();
   everMulti = false; totalKills = 0; winner = null;
   const rows = (f, x0, kinds) => {
     for (let i = 0; i < 12; i++) {
@@ -3957,8 +4400,7 @@ buildSpanel();
 buildSppre();
 bindCanvas();
 resize();
-// the field starts fully zoomed out (whole field visible); the zoom-baked
-// ground composite rebuilds itself on the next frame (farZ mismatch)
+// the field starts fully zoomed out (whole field visible); tiles bake in resize
 zoom = zoomMin(); clampCam();
 clearField();
 refreshBar();
@@ -3984,7 +4426,7 @@ setInterval(() => {
     }
   } else { stallCount = 0; lastTickSeen = t; }
 }, 500);
-window.battleSim = { spawn, plantTree, plantBarr, placeSpawner, chipTree, rotateSelected, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bg: !!bgCv, bgW: bgCv && bgCv.width, hole: !!holeCv, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); } };
+window.battleSim = { spawn, plantTree, plantBarr, placeSpawner, chipTree, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bgTiles: grassTiles.length, hole: holes.length, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); } };
 
 </script>
 </body>
