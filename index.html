@@ -6,7 +6,7 @@
 <title>Big Tussle</title>
 </head>
 <body>
-<!-- portable standalone build of Big Tussle, generated 2026-11-24 from the editor index.html — self-contained, no engine needed -->
+<!-- portable standalone build of Big Tussle, generated 2026-11-25 from the editor index.html — self-contained, no engine needed -->
 <style>
   /* Dark-styled UI (bars/dock are near-black pills), so declare it: browsers
      with auto-dark / night-mode content features then leave our pixels alone
@@ -205,7 +205,7 @@
 
 <div id="topWrap"><div id="bar"></div></div>
 <div id="bbar"></div>
-<div id="ver">v0.0.6</div>
+<div id="ver">v0.0.7</div>
 <div id="fps">60</div>
 <canvas id="cv" tabindex="0"></canvas>
 <canvas id="ov"></canvas>
@@ -234,8 +234,8 @@
 "use strict";
 // GAME_VERSION is the single source of truth for the version tag (#ver,
 // top-left). It is bumped ONLY when the user explicitly says so — never
-// as part of any other change. (v0.0.4, v0.0.5, v0.0.6: bumped by explicit user order.)
-const GAME_VERSION = "v0.0.6";
+// as part of any other change. (v0.0.4, v0.0.5, v0.0.6, v0.0.7: bumped by explicit user order.)
+const GAME_VERSION = "v0.0.7";
 /* ============================================================
    BATTLE SIM — add a unit by adding one entry to UNIT_DEFS.
    Required fields: hp, speed, range, interval, damage, bulletSpeed,
@@ -243,8 +243,8 @@ const GAME_VERSION = "v0.0.6";
    Optional hooks: update(u,dt,ctx), onFire(u,ctx), drawExtra(u,ctx)
    ============================================================ */
 const UNIT_DEFS = {
-  gunner: { name:"gunner", hp:110, speed:76,  range:250, interval:0.85, damage:34, bulletSpeed:560, radius:13, gunLen:20, gunW:5, spread:0.06, pellets:1, aimJitter:0.02, hold:0.7, mag:6, reload:1.6 },
-  sniper:  { name:"sniper",  hp:75,  speed:66,  range:520, interval:3.2,  damage:130, bulletSpeed:950, radius:13, gunLen:36, gunW:3, spread:0.008,pellets:1, aimJitter:0.002, hold:1.0, mag:1, reload:3.6 },
+  gunner: { name:"gunner", hp:110, speed:76,  range:250, sight:420, interval:0.85, damage:34, bulletSpeed:560, radius:13, gunLen:20, gunW:5, spread:0.06, pellets:1, aimJitter:0.02, hold:0.7, mag:6, reload:1.6 },
+  sniper:  { name:"sniper",  hp:75,  speed:66,  range:520, sight:720, interval:3.2,  damage:130, bulletSpeed:950, radius:13, gunLen:36, gunW:3, spread:0.008,pellets:1, aimJitter:0.002, hold:1.0, mag:1, reload:3.6 },
 };
 
 const FACTIONS = {
@@ -255,14 +255,16 @@ const FACTIONS = {
 };
 // spawn-menu categories: each category button opens a compact variant row
 // below the dock. Soldiers/Snipers live under the Soldiers tab, Trees/
-// Barricades under the Objects tab. To add a future variant (e.g. a new
-// barricade): append its id to the category's variants here (+ a UNIT_INFO
-// entry below, and a sim def / plant path if the brush needs one).
+// Barricades under the Objects tab, Water under the Flooring tab. To add a
+// future variant (e.g. a new barricade, or the second water kind): append
+// its id to the category's variants here (+ a UNIT_INFO entry below, and a
+// sim def / plant path if the brush needs one).
 const UNIT_CATS = {
   soldiers:   { label: "Soldiers",   tab: "soldiers", variants: ["gunner"] },
   snipers:    { label: "Snipers",    tab: "soldiers", variants: ["sniper"] },
   trees:      { label: "Trees",      tab: "objects",  variants: ["tree"] },
   barricades: { label: "Barricades", tab: "objects",  variants: ["barricade"] },
+  waters:     { label: "Water",      tab: "flooring", variants: ["water"] },
 };
 // unit info window copy (Description for every brush, Stats where listed,
 // Abilities only where listed). Health mirrors the sim defs (UNIT_DEFS hp,
@@ -283,6 +285,8 @@ const UNIT_INFO = {
                stats: [{ k: "Unit Movespeed", v: "1.25x" }] },
   mud:      { name: "Mud",      desc: "Thick mud that's hard to traverse.",
                stats: [{ k: "Unit Movespeed", v: "0.80x" }] },
+  water:    { name: "Shallow Water", desc: "Shallow Water that units need to wade through.",
+               stats: [{ k: "Unit Movespeed", v: "0.75x" }] },
 };
 const FACTION_KEYS = Object.keys(FACTIONS);
 const DARK = { red:"#8e2a22", blue:"#1f6396", yellow:"#9a7a15", purple:"#5f4390" };
@@ -347,6 +351,7 @@ function attachInput() {
     lastBarrPlant = null; // new stroke: chained fills link from this press, not the last one
     lastUnitDab = null; // new stroke: unit spacing-fill anchors from this press, not the last one
     lastFloorDab = null; // new stroke: dirt fill anchors from this press, not the last one
+    lastErasePt = null; lastEraseT = 0; // new stroke: the erase sweep starts here (a stale anchor would carve a line from the last stroke)
     const p = evPos(e), w = toWorld(p);
     ptrs.set(e.pointerId, { x: p.x, y: p.y });
     if (ptrs.size === 2) { // second finger lands: pan/zoom, never paint/erase
@@ -399,6 +404,7 @@ function attachInput() {
     ptrs.delete(e.pointerId);
     if (ptrs.size < 2) pinch = null;
     strokeNew = null; // stroke over (anything it placed is committed)
+    lastErasePt = null; // erase sweep anchor dies with the stroke too
     if (e.button === 1 && panDrag) { panDrag = null; cv.style.cursor = ""; }
     if (e.button === 2) {
       rDown = null; // tap: nothing (erasing lives on the eraser tool, not here)
@@ -502,7 +508,8 @@ function attachInput() {
       return;
     }
     if (brush.tab === "flooring") {
-      pendingFloorR = Math.max(12, Math.min(FLOOR_R_MAX, pendingFloorR + (wd < 0 ? 6 : -6)));
+      if (brush.eraser) eraseR = Math.max(8, Math.min(FLOOR_R_MAX, eraseR + (wd < 0 ? 6 : -6))); // the eraser carries its own size on Flooring (the place brush keeps pendingFloorR)
+      else pendingFloorR = Math.max(12, Math.min(FLOOR_R_MAX, pendingFloorR + (wd < 0 ? 6 : -6)));
       queueGhost();
       return;
     }
@@ -517,7 +524,7 @@ function attachInput() {
     // top bar / dock (or after capture was lost) never reaches it — without
     // this, panDrag survives and mere mouse motion pans the view (and a
     // stuck paint trail keeps spawning units).
-    addEventListener("pointerup", () => { painting = false; erasing = false; mouse.down = false; panDrag = null; rDown = null; strokeNew = null; cv.style.cursor = ""; queueGhost(); });
+    addEventListener("pointerup", () => { painting = false; erasing = false; mouse.down = false; panDrag = null; rDown = null; strokeNew = null; lastErasePt = null; cv.style.cursor = ""; queueGhost(); });
     // focus lost mid-drag (Alt-Tab with a button held): drop all transient
     // input so the return doesn't pan/paint from stale state. Keys have
     // their own blur reset next to the camera-key binding below.
@@ -545,7 +552,7 @@ const TREE_HP = 300; // dormant health (no destruction yet — reserved for futu
 const BARR_HALF = 24, BARR_HW = 8; // barricade: a 48-long, 16-thick concrete jersey wall, angled in 8 directions at placement
 let barkBits = []; // fallen bark chips on the ground (fade after 10s)
 let leafBits = []; // fallen leaves shaken out of the canopy (fade after 10s)
-let concBits = []; // concrete chips around barricade bases (fade after 5s)
+let concBits = []; // concrete chips around barricade bases (fade after 10s)
 let pendingBarrDir = 0; // placement direction for the next barricade (wheel spins the ghost)
 let spawners = [], spawnerId = 1, selSp = null; // placed unit-spawners: per-spawner kind/faction/cap/cooldown
 let spV = 0; // spawner-settings version: the sliders (cap/cooldown/ring) change no count, so they bump this to dirty the autosave signature
@@ -693,9 +700,8 @@ function pickVariant(v) { // variant chosen from the category row: select it, ke
   }
   refreshBar();
 }
-function catFor(unit, tab) { // the category holding this brush on this tab (first of the tab if none does)
+function catFor(unit, tab) { // the category holding this brush on this tab (null when the brush is a direct-pick kind with no sub-menu, e.g. dirt/concrete/mud on Flooring)
   for (const c of Object.keys(UNIT_CATS)) if (UNIT_CATS[c].tab === tab && UNIT_CATS[c].variants.includes(unit)) return c;
-  for (const c of Object.keys(UNIT_CATS)) if (UNIT_CATS[c].tab === tab) return c;
   return null;
 }
 function fillUcat(cat) { // rebuild the variant row for the open category (or hide it)
@@ -703,7 +709,8 @@ function fillUcat(cat) { // rebuild the variant row for the open category (or hi
   bcatPop.innerHTML = "";
   if (!cat || !UNIT_CATS[cat]) { bcatPop.hidden = true; return; }
   for (const v of UNIT_CATS[cat].variants) {
-    const b = btn(`<span class="uname">${v}</span>`, v, () => pickVariant(v));
+    const label = (typeof UNIT_INFO !== "undefined" && UNIT_INFO[v] && UNIT_INFO[v].name) || v; // show the brush's full name ("Shallow Water", not the "water" id the CSS would capitalize to "Water")
+    const b = btn(`<span class="uname">${label}</span>`, label, () => pickVariant(v));
     b.dataset.u = v; unitBtns[v] = b;
     b.classList.toggle("on", !brush.eraser && brush.unit === v); // highlight now: this row is built after the refreshBar button loop, so fresh buttons would otherwise wait a heartbeat for their .on
     bcatPop.appendChild(b);
@@ -724,16 +731,19 @@ function buildBar() {
   // main dock row: categories, objects, eraser, info, spawner tab, collapse
   // toggle (the variant row + attached windows hang off #bbar itself below)
   const bbrow = document.createElement("div"); bbrow.id = "bbrow"; bbar.appendChild(bbrow);
-  // category buttons (Soldiers, Snipers, ... / Trees, Barricades, ...) — each
-  // opens the compact variant row below the dock instead of placing directly
+  // category buttons (Soldiers, Snipers / Trees, Barricades / Water) — each
+  // opens the compact variant row below the dock instead of placing directly.
+  // Dirt, concrete and mud stay direct-pick Flooring buttons (no sub-menu);
+  // Water is the only Flooring kind with a sub-menu, ready for the second
+  // water kind (just append its id to waters.variants).
   btabSold = document.createElement("span"); btabSold.className = "bgroup";
   btabObj = document.createElement("span"); btabObj.className = "bgroup";
   btabFloor = document.createElement("span"); btabFloor.className = "bgroup";
-  const dr = btn(`<span class="uname">dirt</span>`, "dirt path (units walk 1.10x faster on it)", () => { brush.unit = "dirt"; brush.tab = "flooring"; brush.eraser = false; });
+  const dr = btn(`<span class="uname">dirt</span>`, "dirt path (units walk 1.10x faster on it)", () => { brush.unit = "dirt"; brush.tab = "flooring"; brush.eraser = false; catOpen = null; });
   dr.dataset.u = "dirt"; unitBtns.dirt = dr; btabFloor.appendChild(dr);
-  const cn = btn(`<span class="uname">concrete</span>`, "concrete (units walk 1.25x faster on it)", () => { brush.unit = "concrete"; brush.tab = "flooring"; brush.eraser = false; });
+  const cn = btn(`<span class="uname">concrete</span>`, "concrete (units walk 1.25x faster on it)", () => { brush.unit = "concrete"; brush.tab = "flooring"; brush.eraser = false; catOpen = null; });
   cn.dataset.u = "concrete"; unitBtns.concrete = cn; btabFloor.appendChild(cn);
-  const md = btn(`<span class="uname">mud</span>`, "mud (units walk 0.80x through it — slower)", () => { brush.unit = "mud"; brush.tab = "flooring"; brush.eraser = false; });
+  const md = btn(`<span class="uname">mud</span>`, "mud (units walk 0.80x through it — slower)", () => { brush.unit = "mud"; brush.tab = "flooring"; brush.eraser = false; catOpen = null; });
   md.dataset.u = "mud"; unitBtns.mud = md; btabFloor.appendChild(md);
   for (const cat of Object.keys(UNIT_CATS)) {
     const cb = btn(`<span class="uname">${UNIT_CATS[cat].label}</span>`, UNIT_CATS[cat].label + " variants", () => {
@@ -742,7 +752,9 @@ function buildBar() {
       if (v) { brush.unit = v; if (UNIT_DEFS[v]) lastGunnerUnit = v; else { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } }
     });
     cb.dataset.cat = cat; catBtns[cat] = cb;
-    (UNIT_CATS[cat].tab === "objects" ? btabObj : btabSold).appendChild(cb);
+    if (UNIT_CATS[cat].tab === "objects") btabObj.appendChild(cb);
+    else if (UNIT_CATS[cat].tab === "flooring") btabFloor.appendChild(cb);
+    else btabSold.appendChild(cb);
   }
   bbrow.appendChild(btabSold);
   // variant row: in-flow below the main row, stays open while its category
@@ -1287,20 +1299,35 @@ function groundLayers() {
   } else if (floors.length) {
     const fm = FLOOR_R_MAX + 12; // overhang covers the biggest paint blob (weak-GPU live circles only)
     const ex0 = cam.x - fm, ey0 = cam.y - fm, ex1 = cam.x + W / zoom + fm, ey1 = cam.y + H / zoom + fm;
-    // group by resolved paint color (one fill per kind — dirt-tan alone here
-    // would paint mud and concrete wrong on tile-fallback GPUs)
-    const seen = {};
-    for (const f of floors) { const c = FLOOR_COL[f.kind] || FLOOR_COL.dirt; (seen[c] || (seen[c] = [])).push(f); }
-    for (const c of Object.keys(seen)) {
-      ctx.fillStyle = c;
-      ctx.beginPath();
-      for (const f of seen[c]) {
-        if (f.x + f.r < ex0 || f.x - f.r > ex1 || f.y + f.r < ey0 || f.y - f.r > ey1) continue;
-        ctx.moveTo(f.x + f.r, f.y);
-        ctx.ellipse(f.x, f.y, f.r, f.r, 0, 0, 7);
+    // paint in floors[] order (what-you-see-is-what-you-get, like the queries
+    // and the bake): runs of cut-free blobs sharing a resolved color batch
+    // into one fill, flushed on every color change. Carved blobs draw singly
+    // with their mask, exactly as before. (Grouping by color first would
+    // mis-order cross-kind overlaps — a mud blob painted later would slide
+    // under an earlier pond — and disagree with the sim.)
+    let runCol = null, batch = false;
+    const flush = () => { if (batch) { ctx.fill(); ctx.beginPath(); batch = false; } };
+    ctx.beginPath();
+    for (const f of floors) {
+      if (f.x + f.r < ex0 || f.x - f.r > ex1 || f.y + f.r < ey0 || f.y - f.r > ey1) continue;
+      const c = FLOOR_COL[f.kind] || FLOOR_COL.dirt;
+      const cuts = cutsFor(f);
+      if (cuts.length) {
+        flush(); // carved blobs draw singly with their mask (unchanged)
+        if (c !== runCol) { ctx.fillStyle = c; runCol = c; }
+        ctx.beginPath();
+        ctx.moveTo(f.x + f.r, f.y); ctx.ellipse(f.x, f.y, f.r, f.r, 0, 0, 7);
+        for (const t of cuts) { ctx.moveTo(t.x + t.r, t.y); ctx.ellipse(t.x, t.y, t.r, t.r, 0, 0, 7, true); }
+        ctx.fill("evenodd");
+        ctx.beginPath();
+        continue;
       }
-      ctx.fill();
+      if (c !== runCol) { flush(); ctx.fillStyle = c; runCol = c; ctx.beginPath(); }
+      ctx.moveTo(f.x + f.r, f.y);
+      ctx.ellipse(f.x, f.y, f.r, f.r, 0, 0, 7);
+      batch = true;
     }
+    flush();
   }
   ctx.imageSmoothingEnabled = false;
   ctx.setTransform(DPR * zoom, 0, 0, DPR * zoom, -cam.x * DPR * zoom, -cam.y * DPR * zoom);
@@ -1334,13 +1361,16 @@ function spawn(kind, faction, x, y) {
     walk: Math.random() * 10, moving: false, running: false, spd: 0, flash: 0, retarget: Math.random() * 0.2,
     tx: null, vx: 0, vy: 0, smvx: 0, smvy: 0, seed: Math.random() * 1000, _f: null,
     rollT: 0, rollCd: Math.random() * 1.5, rollDx: 0, rollDy: 0, rollRot: 0, crouch: 0,
-    vaultT: 0, vaultCd: 0, vaultDur: 0.65, vaultDx: 1, vaultDy: 0, // barricade-vault state (hop over mid-span crossings, firing all the way)
+    vaultT: 0, vaultCd: 0, vaultDur: 0.65, vaultEl: 0, vaultDx: 1, vaultDy: 0, // barricade-vault state (hop over mid-span crossings, firing all the way)
     hitT: -1e9, // game-time of the last hit taken (drives the 10s out-of-combat heal surge)
     // AI personality: skill scales aim error/turn rate, aggr scales preferred
     // range, fleeHp sets the wounded threshold, weave seeds the serpentine.
     skill: 0.75 + Math.random() * 0.55, aggr: 0.88 + Math.random() * 0.27,
     fleeHp: 0.3 + Math.random() * 0.15, weave: Math.random() * Math.PI * 2,
     cover: Math.random() < (kind === "sniper" ? 1.0 : 0.95), coverSide: Math.random() < 0.5 ? -1 : 1, coverTree: null, coverHold: false, // snipers always work cover when any stands
+    seenX: NaN, seenY: NaN, expX: NaN, expY: NaN, goalT: 12, // search state: last confirmed contact + waypoint + its 12s expiry (NaN = none)
+    alertHeard: -1e9, runLeg: false, // last overheard shout adopted (dedups repeat shouts) + this waypoint leg's pace (run some guesses, walk the rest)
+    inWater: false, wetT: 0, wadeHopT: 0, wadeCd: 0, // shallow-water state: inside now / glistening after exit (5s) / shoreline-hop anim / hop cooldown
     spdMul: 0.9 + Math.random() * 0.2, // individual pace: no two gunners march alike
     sp: 0, // spawner id that summoned this unit (0 = hand-placed)
 // perf-cache fields (pre-initialized so every unit shares one hidden class;
@@ -1353,7 +1383,11 @@ function spawn(kind, faction, x, y) {
     trunkTouch: null, escGx: 0, escGy: 0, // trunk-grind slide state (same hidden class, see the wall/edge slide)
     trunkPrev: null, trunkN: 0, // consecutive-step contact counter: engagement signal (see collision loop)
   };
-  units.push(u); return u;
+  units.push(u);
+  // summoned/placed straight into water starts wet: no shoreline crossing
+  // happened, so the first step must not fake an entry splash or hop.
+  { const wet0 = inWaterAt(floorGridGet(), x, y); u.inWater = wet0; u.wetT = wet0 ? 5 : 0; }
+  return u;
 }
 function eraseCatVariants() { // the UNIT_CATS variants the eraser may wipe: the selected category's own kinds (flooring: the picked kind itself)
   if (brush.tab === "flooring") return [brush.unit];
@@ -1627,6 +1661,7 @@ function plantTree(x, y) {
   { let nt = 0; for (const t of trees) if (t.kind !== "barr" && ++nt >= MAX_TREES) return null; }
   x = Math.max(TREE_R, Math.min(FW - TREE_R, x));
   y = Math.max(TREE_R, Math.min(FH - TREE_R, y));
+  if (inWaterAt(floorGridGet(), x, y)) return null; // trees need dry footing — no rooting in shallow water (grass islands read dry through the carve, so they still plant)
   // trunks may not overlap, but canopies can — trees plant as close as
   // trunk-to-trunk contact, so dense clumps and forests are possible.
   // Trunks stay clear of barricade middles (a trunk on the wall reads wrong).
@@ -1761,6 +1796,7 @@ function plantBarr(x, y) {
   { let nb = 0; for (const t of trees) if (t.kind === "barr" && ++nb >= BARR_MAX) return null; }
   x = Math.max(BARR_HALF, Math.min(FW - BARR_HALF, x));
   y = Math.max(BARR_HALF, Math.min(FH - BARR_HALF, y));
+  if (inWaterAt(floorGridGet(), x, y)) return null; // concrete needs dry footing — walls can't stand in shallow water (islands read dry, so causeways still chain)
   // barricades chain into walls, so they plant closer than trees — but never
   // stacked on a trunk or each other
   for (const t of trees) {
@@ -1798,25 +1834,30 @@ function plantBarr(x, y) {
 // grid rebuilt only when the floor version moves (placements/erases).
 const DIRT_R = 36; // default dirt brush radius (wheel resizes 12..FLOOR_R_MAX)
 const FLOOR_R_MAX = 360; // dirt brush max radius — 3x the original 120 (blob count itself is uncapped)
-const FLOOR_COL = { dirt: "#9c7c4c", concrete: "#8f959c", mud: "#6e4f2e" }; // packed-dirt tan, industrial gray, dark mud brown
-// flooring kinds (brush id -> walk boost + paint color). Concrete (1.25x)
-// layers with Dirt (1.10x) freely — where blobs overlap, the stronger
-// boost wins (order-independent, so repaint order never matters). Mud (0.80x)
-// slows units down; it loses to dirt and concrete on overlaps, same rule.
+const FLOOR_COL = { dirt: "#9c7c4c", concrete: "#8f959c", mud: "#6e4f2e", water: "#4f97c4" }; // packed-dirt tan, industrial gray, dark mud brown, shallow-water blue
+// flooring kinds (brush id -> walk boost + paint color). Where blobs overlap,
+// the topmost (last-painted) dab wins, order-dependent exactly like the bake:
+// what you see is what you get. Concrete (1.25x) and Dirt (1.10x) speed units
+// up; Mud (0.80x) and shallow water (0.75x, the slowest of all) slow them
+// down — so water painted over mud reads wet, and a causeway of dirt or mud
+// painted over a pond reads dry.
 const FLOOR_DEFS = {
   dirt:     { boost: 1.1,  col: FLOOR_COL.dirt },
   concrete: { boost: 1.25, col: FLOOR_COL.concrete },
   mud:      { boost: 0.8,  col: FLOOR_COL.mud },
+  water:    { boost: 0.75, col: FLOOR_COL.water },
 };
 let floors = []; // {x,y,r,kind,boost}: painted ground — no collision, no selection
+let floorCuts = []; // subtractive carve discs {x,y,r,kind}: the flooring eraser punches holes instead of only deleting whole blobs, so lakes can be sculpted into islands (kind-gated like the blobs; queries and the bake both respect them)
+let eraseR = 22; // flooring-eraser cursor radius (wheel-adjustable while erasing, 8..360 — the long-standing default footprint)
 let floorsV = 0, pendingFloorR = DIRT_R;
-function bumpFloors() { floorsV++; }
+function bumpFloors() { floorsV++; } // versions floors AND cuts (same grid rebuild covers both, and the autosave sig rides floorsV so cut edits persist with no new counter)
 let floorCv = null, floorCx = null; // baked dirt layer (null = live-vector fallback on weak GPUs)
 const FGS = 64; // floor-grid cell size (world px)
-let floorGridV = -1, floorGrid = new Map();
+let floorGridV = -1, floorGrid = new Map(), cutGrid = new Map();
 function floorGridGet() {
   if (floorGridV === floorsV) return floorGrid;
-  floorGridV = floorsV; floorGrid = new Map();
+  floorGridV = floorsV; floorGrid = new Map(); cutGrid = new Map();
   for (const f of floors) {
     const cx0 = (((f.x - f.r) / FGS) | 0), cx1 = (((f.x + f.r) / FGS) | 0);
     const cy0 = (((f.y - f.r) / FGS) | 0), cy1 = (((f.y + f.r) / FGS) | 0);
@@ -1825,22 +1866,109 @@ function floorGridGet() {
       let a = floorGrid.get(k); if (!a) { a = []; floorGrid.set(k, a); } a.push(f);
     }
   }
+  for (const c of floorCuts) {
+    const cx0 = (((c.x - c.r) / FGS) | 0), cx1 = (((c.x + c.r) / FGS) | 0);
+    const cy0 = (((c.y - c.r) / FGS) | 0), cy1 = (((c.y + c.r) / FGS) | 0);
+    for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
+      const k = (cx + 128) * 2048 + (cy + 128);
+      let a = cutGrid.get(k); if (!a) { a = []; cutGrid.set(k, a); } a.push(c);
+    }
+  }
   return floorGrid;
 }
-function floorBoostAt(fg, x, y) { // walk-speed multiplier at this point: strongest covering floor wins (1.25 concrete, 1.1 dirt, 0.8 mud, 1 bare)
+function cutCovers(kind, x, y) { // is this point inside any carve disc of the kind (overlapping cuts are fine — any-cover is exact either way)
+  const cell = cutGrid.get((((x / FGS) | 0) + 128) * 2048 + (((y / FGS) | 0) + 128));
+  if (!cell) return false;
+  for (const c of cell) { if (c.kind !== kind) continue; const dx = x - c.x, dy = y - c.y; if (dx * dx + dy * dy < c.r * c.r) return true; }
+  return false;
+}
+function topFloorAt(fg, x, y) { // topmost covering blob (last painted wins, carve holes reveal what's below) — matches the baked layer, where later dabs overpaint earlier ones
   const cell = fg.get((((x / FGS) | 0) + 128) * 2048 + (((y / FGS) | 0) + 128));
-  if (!cell) return 1;
-  let m = 0; // 0 = no floor covers this point (bare ground reads 1); mud's 0.8 must beat bare, so the max starts below every boost, not at 1
-  for (const f of cell) { const dx = x - f.x, dy = y - f.y; if (dx * dx + dy * dy < f.r * f.r && (f.boost || 1) > m) m = f.boost; }
-  return m > 0 ? m : 1;
+  if (!cell) return null;
+  let top = null; // cell lists ride in paint order, so the last covering dab is what's visible
+  for (const f of cell) { const dx = x - f.x, dy = y - f.y; if (dx * dx + dy * dy < f.r * f.r && !cutCovers(f.kind, x, y)) top = f; }
+  return top;
+}
+function floorBoostAt(fg, x, y) { // walk-speed multiplier at this point: what you see is what you get (topmost covering floor's boost, 1 on bare)
+  const t = topFloorAt(fg, x, y);
+  return t ? (t.boost || 1) : 1;
+}
+function inWaterAt(fg, x, y) { // is this point visibly shallow water (topmost covering blob is water — mud painted over a pond reads dry, water painted over mud reads wet)
+  const t = topFloorAt(fg, x, y);
+  return !!t && t.kind === "water";
+}
+function cutsFor(f) { // same-kind carve discs touching this blob (linear scan — a stroke leaves a trail of discs, but containment dedup keeps pile-ups out, and this runs at paint/repaint time, never per frame)
+  const out = [];
+  for (const c of floorCuts) {
+    if (c.kind !== f.kind) continue;
+    const dx = c.x - f.x, dy = c.y - f.y, m = f.r + c.r;
+    if (dx * dx + dy * dy < m * m) out.push(c);
+  }
+  return out;
+}
+function paintFloorBlob(g, f, cull, bi) { // one blob into the baked layer with its carve-outs: base + speckle clipped to the disc minus same-kind cuts (cut arcs run reversed so the hole reads on every canvas, evenodd where supported). bi = f's index in floors[] (pass floors.length-1 from the placement path, -1 for a repair pass): the punch below is authoritative, so lower other-kind blobs are repainted into each punched circle to match the queries, which reveal them through the carve
+  // Fill the whole disc first (base + speckle), then punch each same-kind
+  // cut with a circular clear: the clear is authoritative, so unlike an
+  // evenodd clip it can never leave the fill's own 1px antialiased edge
+  // behind where the blob perimeter crosses the hole (the old clip+fill
+  // pair rasterized their shared edge differently and leaked thin arcs).
+  g.fillStyle = FLOOR_COL[f.kind] || FLOOR_COL.dirt;
+  g.beginPath(); g.arc(f.x, f.y, f.r, 0, 7); g.fill();
+  paintFloorTex(g, f, cull);
+  const cuts = cutsFor(f);
+  if (!cuts.length) return;
+  for (const c of cuts) {
+    g.save();
+    g.beginPath(); g.arc(c.x, c.y, c.r, 0, 7); g.clip();
+    g.clearRect(c.x - c.r - 1, c.y - c.r - 1, c.r * 2 + 2, c.r * 2 + 2);
+    g.restore();
+  }
+  // reveal-below repair: the clear above also wiped earlier (lower) blobs of
+  // other kinds, but the queries reveal them through the carve (topFloorAt
+  // skips only the cut kind — a pond erased over dirt must read dirt, not
+  // grass). Repaint the lower other-kind stack clipped to each punched
+  // circle, before later blobs cover it again. Same-kind layers stay holed
+  // (a cut hides every blob of its kind, per the queries). Only pixels inside
+  // carve discs over lower stacks can change; single-layer carves repaint
+  // nothing and read exactly as before.
+  if (!(bi > 0)) return;
+  for (const c of cuts) {
+    g.save();
+    g.beginPath(); g.arc(c.x, c.y, c.r, 0, 7); g.clip();
+    const cc = { x0: c.x - c.r, y0: c.y - c.r, x1: c.x + c.r, y1: c.y + c.r };
+    for (let li = 0; li < bi; li++) {
+      const l = floors[li];
+      if (!l || l.kind === f.kind) continue;
+      if (l.x + l.r < cc.x0 || l.x - l.r > cc.x1 || l.y + l.r < cc.y0 || l.y - l.r > cc.y1) continue;
+      paintFloorBlob(g, l, cc, -1); // lower contribution, with its own cuts punched; -1 = punch only, no deeper repair
+    }
+    g.restore();
+  }
 }
 function paintFloorDot(f) { // one dab straight into the baked layer (placement path)
   if (!floorCx) return;
   const g = floorCx;
   g.setTransform(DPR, 0, 0, DPR, 0, 0);
-  g.fillStyle = FLOOR_COL[f.kind] || FLOOR_COL.dirt;
-  g.beginPath(); g.arc(f.x, f.y, f.r, 0, 7); g.fill();
-  paintFloorTex(g, f);
+  paintFloorBlob(g, f, undefined, floors.length - 1); // the new dab is topmost: everything before it is its lower stack
+}
+function pushCut(x, y, r, kind) { // record a carve disc: exact union, no smoothing (keeps the bake mask and the queries exact, and the trail matching the cursor)
+  // A dab that overlaps old carves without containing them is KEPT as its
+  // own disc. (Merging overlaps into one covering disc ballooned the hole
+  // past the ring — a short scrub with a small ring grew a giant circle,
+  // so the carve no longer respected the eraser's radius.) Containment
+  // still dedups: a dab inside an old carve adds nothing, and a dab
+  // swallowing old carves replaces them, so holding still never piles
+  // discs and re-carving nowhere new stays a no-op.
+  for (let i = floorCuts.length - 1; i >= 0; i--) {
+    const c = floorCuts[i];
+    if (c.kind !== kind) continue;
+    const dx = c.x - x, dy = c.y - y, d = Math.sqrt(dx * dx + dy * dy);
+    if (d + r <= c.r) return false; // dab lands inside an old carve — nothing to add
+    if (d + c.r <= r) { floorCuts.splice(i, 1); continue; } // dab swallows this carve — drop it, keep checking the rest
+  }
+  floorCuts.push({ x, y, r, kind });
+  bumpFloors();
+  return true;
 }
 function floorRand(f) { // deterministic per-blob stream: erase/repaint/resize re-bakes the identical speckle, never a reshuffled one
   let a = (Math.round(f.x * 3) * 374761393 + Math.round(f.y * 3) * 668265263 + Math.round(f.r * 7) * 2246822519) | 0;
@@ -1858,19 +1986,52 @@ function floorRand(f) { // deterministic per-blob stream: erase/repaint/resize r
 const FLOOR_TEX = {
   dirt: ["rgba(60,40,20,0.07)", "rgba(255,240,210,0.07)"],
   concrete: ["rgba(20,24,30,0.08)", "rgba(255,255,255,0.08)"],
-  mud: ["rgba(12,6,2,0.14)", "rgba(225,185,145,0.10)"]
+  mud: ["rgba(12,6,2,0.14)", "rgba(225,185,145,0.10)"],
+  water: ["rgba(10,45,75,0.12)", "rgba(230,245,255,0.16)"]
 };
-function paintFloorTex(g, f) {
-  const rnd = floorRand(f);
+function paintFloorTex(g, f, cull) {
   const cols = FLOOR_TEX[f.kind] || FLOOR_TEX.dirt;
-  // grass-like density (1 dot / 380px², capped): a big mud sea reads as
-  // texture instead of plastic, small blobs stay nearly clean
-  const n = Math.max(4, Math.min(700, Math.round(Math.PI * f.r * f.r / 380)));
-  for (let i = 0; i < n; i++) {
-    const a = rnd() * Math.PI * 2, d = Math.sqrt(rnd()) * Math.max(0, f.r - 1);
-    g.fillStyle = cols[(rnd() * 2) | 0];
-    g.beginPath(); g.arc(f.x + Math.cos(a) * d, f.y + Math.sin(a) * d, 0.4 + rnd() * 1.8, 0, 7); g.fill();
+  let sp = f._spk;
+  if (!sp) { // dots derive only from (x, y, r), so bake them once per blob
+    // and replay the path after: erasing over a giant lake re-ran 90k+
+    // seeded RNG/trig calls per tick (125ms a tick here) — the replay keeps
+    // the exact same dots in the same order (erase/repaint/resize re-bake
+    // identically), so the pixels never change, only the cost does.
+    // (Still built on the live context, not Path2D: Path2D fill measured
+    // slower. Exact Float64 store, so replay is bit-identical to regen.)
+    const rnd = floorRand(f);
+    // grass-like density (1 dot / 380px², capped): a big mud sea reads as
+    // texture instead of plastic, small blobs stay nearly clean
+    const n = Math.max(4, Math.min(700, Math.round(Math.PI * f.r * f.r / 380)));
+    const d0 = [], d1 = [];
+    for (let i = 0; i < n; i++) {
+      const a = rnd() * Math.PI * 2, d = Math.sqrt(rnd()) * Math.max(0, f.r - 1);
+      const ci = (rnd() * 2) | 0, r = 0.4 + rnd() * 1.8;
+      const px = f.x + Math.cos(a) * d, py = f.y + Math.sin(a) * d;
+      (ci === 0 ? d0 : d1).push(px, py, r);
+    }
+    sp = f._spk = { a: new Float64Array(d0), b: new Float64Array(d1) };
   }
+  // two fills per blob, not one per dot: collected into one sub-path per
+  // color. A max-size dab drops 700 dots, and the per-dot fill overhead
+  // saturated slow canvases into stroke lag while placing.
+  // erase repaints pass the dirty rect as cull: dots fully outside it can't
+  // rasterize inside it, so their arc commands are skipped (same pixels —
+  // the clip below would cut them anyway — at a fraction of the path cost).
+  g.beginPath();
+  if (!cull) {
+    for (let i = 0; i < sp.a.length; i += 3) { g.moveTo(sp.a[i] + sp.a[i + 2], sp.a[i + 1]); g.arc(sp.a[i], sp.a[i + 1], sp.a[i + 2], 0, 7); }
+  } else {
+    for (let i = 0; i < sp.a.length; i += 3) { const px = sp.a[i], py = sp.a[i + 1], r = sp.a[i + 2]; if (px + r < cull.x0 || px - r > cull.x1 || py + r < cull.y0 || py - r > cull.y1) continue; g.moveTo(px + r, py); g.arc(px, py, r, 0, 7); }
+  }
+  g.fillStyle = cols[0]; g.fill();
+  g.beginPath();
+  if (!cull) {
+    for (let i = 0; i < sp.b.length; i += 3) { g.moveTo(sp.b[i] + sp.b[i + 2], sp.b[i + 1]); g.arc(sp.b[i], sp.b[i + 1], sp.b[i + 2], 0, 7); }
+  } else {
+    for (let i = 0; i < sp.b.length; i += 3) { const px = sp.b[i], py = sp.b[i + 1], r = sp.b[i + 2]; if (px + r < cull.x0 || px - r > cull.x1 || py + r < cull.y0 || py - r > cull.y1) continue; g.moveTo(px + r, py); g.arc(px, py, r, 0, 7); }
+  }
+  g.fillStyle = cols[1]; g.fill();
 }
 function repaintFloorRect(x0, y0, x1, y1) { // clear a rect of the baked layer and repaint intersecting floors (erase/resize path)
   if (!floorCx) return;
@@ -1878,13 +2039,23 @@ function repaintFloorRect(x0, y0, x1, y1) { // clear a rect of the baked layer a
   if (x1 <= x0 || y1 <= y0) return;
   const g = floorCx;
   g.setTransform(DPR, 0, 0, DPR, 0, 0);
-  g.clearRect(x0, y0, x1 - x0, y1 - y0);
-  for (const f of floors) {
-    if (f.x + f.r < x0 || f.x - f.r > x1 || f.y + f.r < y0 || f.y - f.r > y1) continue;
-    g.fillStyle = FLOOR_COL[f.kind] || FLOOR_COL.dirt;
-    g.beginPath(); g.arc(f.x, f.y, f.r, 0, 7); g.fill();
-    paintFloorTex(g, f);
+  // Snap the dirty rect to whole device pixels and clip to it: the fill/punch
+  // pair then meets the clip at pixel boundaries, so no coverage-mismatch
+  // fringe survives at the edge (that was the "strands" bug), while blobs
+  // only rasterize the dirty area instead of their whole discs (repainting
+  // 100+ r360 lake blobs whole every tick was the erase lag).
+  const ax0 = Math.floor(x0 * DPR) / DPR, ay0 = Math.floor(y0 * DPR) / DPR;
+  const ax1 = Math.ceil(x1 * DPR) / DPR, ay1 = Math.ceil(y1 * DPR) / DPR;
+  g.clearRect(ax0, ay0, ax1 - ax0, ay1 - ay0);
+  g.save();
+  g.beginPath(); g.rect(ax0, ay0, ax1 - ax0, ay1 - ay0); g.clip();
+  const cull = { x0: ax0, y0: ay0, x1: ax1, y1: ay1 }; // speckle dots outside this can't paint inside it — skip their arcs (same pixels, far less path)
+  for (let bi = 0; bi < floors.length; bi++) {
+    const f = floors[bi];
+    if (f.x + f.r < ax0 || f.x - f.r > ax1 || f.y + f.r < ay0 || f.y - f.r > ay1) continue;
+    paintFloorBlob(g, f, cull, bi); // bi threads paint order into the reveal-below repair (earlier blobs are the lower stack)
   }
+  g.restore();
 }
 function buildFloorLayer() { // (re)create the baked dirt layer on resize (needs bgCv first: same backing deal)
   floorCv = null; floorCx = null;
@@ -1906,22 +2077,75 @@ function plantFloor(x, y, kind) {
   x = Math.max(0, Math.min(FW, x)); y = Math.max(0, Math.min(FH, y));
   if (!FLOOR_DEFS[kind]) kind = FLOOR_DEFS[brush.unit] ? brush.unit : "dirt"; // plant the picked flooring (dev calls default to the brush)
   const f = { x, y, r: pendingFloorR, kind, boost: FLOOR_DEFS[kind].boost };
-  floors.push(f); bumpFloors(); paintFloorDot(f);
-  return f;
-}
-function eraseFloorsAt(x, y) { // wipe every picked-kind floor blob touching the cursor (category-gated: only brush.unit's kind)
-  let rx0 = x, ry0 = y, rx1 = x, ry1 = y, n = 0;
-  for (let i = floors.length - 1; i >= 0; i--) {
-    const f = floors[i];
-    if (f.kind !== brush.unit) continue; // category-gated: Dirt wipes dirt, Mud wipes mud — never the other kind
-    const dx = f.x - x, dy = f.y - y, m = f.r + 22;
-    if (dx * dx + dy * dy < m * m) {
-      rx0 = Math.min(rx0, f.x - f.r); ry0 = Math.min(ry0, f.y - f.r);
-      rx1 = Math.max(rx1, f.x + f.r); ry1 = Math.max(ry1, f.y + f.r);
-      floors.splice(i, 1); n++;
+  floors.push(f);
+  let hx0 = Infinity, hy0 = Infinity, hx1 = -Infinity, hy1 = -Infinity; // bounds of healed carves (their holes must refill in NEIGHBOR blobs too, not just under the new dab)
+  for (let i = floorCuts.length - 1; i >= 0; i--) { // painting over a carve heals it: drop same-kind cuts whose center lands inside the new blob
+    const c = floorCuts[i];
+    if (c.kind !== kind) continue;
+    const dx = c.x - x, dy = c.y - y;
+    // either containment heals: the dab swallows the carve's center, or the
+    // dab lands inside the carve (a small dab in a big hole must fill, not
+    // punch itself invisible — that read as "can't place flooring here").
+    const ex = x - c.x, ey = y - c.y;
+    if (dx * dx + dy * dy < f.r * f.r || ex * ex + ey * ey < c.r * c.r) {
+      hx0 = Math.min(hx0, c.x - c.r); hy0 = Math.min(hy0, c.y - c.r);
+      hx1 = Math.max(hx1, c.x + c.r); hy1 = Math.max(hy1, c.y + c.r);
+      floorCuts.splice(i, 1);
     }
   }
-  if (n) { bumpFloors(); repaintFloorRect(rx0 - 2, ry0 - 2, rx1 + 2, ry1 + 2); poof(x, y, FLOOR_COL[brush.unit] || "#9c7c4c", 4); refreshBar(); }
+  bumpFloors(); paintFloorDot(f);
+  if (hx1 > hx0) repaintFloorRect(hx0 - 2, hy0 - 2, hx1 + 2, hy1 + 2); // refill the healed holes everywhere they were punched
+  return f;
+}
+let lastEraseT = 0, lastErasePt = null; // flooring-erase throttle + segment-sweep anchor (one throttled sample per 30ms like paint, with fill hops so fast scrubs stay gapless)
+function eraseDiscAt(x, y, B) { // one carve disc: fully-covered blobs die, the rest get a hole punched (kind-gated); accumulates the dirty bounds, no repaint here
+  const e = eraseR, kind = brush.unit;
+  let hit = false;
+  for (let i = floors.length - 1; i >= 0; i--) {
+    const f = floors[i];
+    if (f.kind !== kind) continue; // category-gated: each kind wipes only itself (Dirt never eats concrete, mud or water)
+    const dx = f.x - x, dy = f.y - y, d = Math.sqrt(dx * dx + dy * dy);
+    if (d < f.r + e) {
+      if (d + f.r <= e) { // cursor swallows the blob whole — no hole record needed
+        B.x0 = Math.min(B.x0, f.x - f.r); B.y0 = Math.min(B.y0, f.y - f.r);
+        B.x1 = Math.max(B.x1, f.x + f.r); B.y1 = Math.max(B.y1, f.y + f.r);
+        floors.splice(i, 1); hit = true;
+      } else { // graze: punch a hole the size of the cursor (islands survive around it)
+        if (pushCut(x, y, e, kind)) { // record the hole (absorbed when already carved — then no repaint is needed)
+          B.x0 = Math.min(B.x0, x - e); B.y0 = Math.min(B.y0, y - e);
+          B.x1 = Math.max(B.x1, x + e); B.y1 = Math.max(B.y1, y + e);
+          hit = true;
+        }
+      }
+    }
+  }
+  return hit;
+}
+function eraseFloorsAt(x, y) { // flooring-eraser stroke sample: throttled sweep from the last sample so holding still never piles and fast scrubs never gap
+  const now = performance.now();
+  if (lastErasePt && now - lastEraseT < 30) return 0;
+  lastEraseT = now;
+  const B = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  let n = 0;
+  const hop = Math.max(12, eraseR * 0.6);
+  if (lastErasePt) {
+    const dx = x - lastErasePt.x, dy = y - lastErasePt.y, fd = Math.hypot(dx, dy);
+    if (fd >= hop) {
+      for (let dd = hop; dd < fd; dd += hop) if (eraseDiscAt(lastErasePt.x + dx * dd / fd, lastErasePt.y + dy * dd / fd, B)) n++;
+    }
+  }
+  if (eraseDiscAt(x, y, B)) n++;
+  lastErasePt = { x, y };
+  if (n) {
+    const bx0 = B.x0, by0 = B.y0, bx1 = B.x1, by1 = B.y1; // dab union before hole expansion (cuts that only touch other holes stay out — otherwise one tick's rect snowballs across the whole carve trail)
+    for (const c of floorCuts) { // repaint the full holes of the cuts this stroke's dabs actually touch (not the holes those holes touch — that cascade grew one tick's rect across the whole trail)
+      if (c.kind !== brush.unit) continue;
+      if (c.x + c.r < bx0 || c.x - c.r > bx1 || c.y + c.r < by0 || c.y - c.r > by1) continue;
+      B.x0 = Math.min(B.x0, c.x - c.r); B.y0 = Math.min(B.y0, c.y - c.r);
+      B.x1 = Math.max(B.x1, c.x + c.r); B.y1 = Math.max(B.y1, c.y + c.r);
+    }
+    bumpFloors(); repaintFloorRect(B.x0 - 2, B.y0 - 2, B.x1 + 2, B.y1 + 2); poof(x, y, FLOOR_COL[brush.unit] || "#9c7c4c", 4); refreshBar();
+  }
   return n;
 }
 // Concrete impact: barricades never shake, but a hit reads in three beats —
@@ -1957,7 +2181,7 @@ function chipBarr(t, x, y, b) {
     const sp = (380 + Math.random() * 270) * big;
     const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp - 60;
     const life = 0.3 + Math.random() * 0.2;
-    parts.push({ x, y, vx, vy, life, max: life, g: 700, flake: true,
+    parts.push({ x, y, vx, vy, life, max: life, g: 700, flake: true, soft: true,
                  rot: Math.atan2(vy, vx), vr: (Math.random() - 0.5) * 12,
                  c: Math.random() < 0.5 ? "#ffe9a8" : "#ffb14e", s: 2.4 + Math.random() * 1.2 });
   }
@@ -2043,6 +2267,11 @@ let treeSet = new Set();
 let treeSetV = -1; // treeSet rebuilds only when the terrain actually changed (or the size drifted — see step)
 let tgtCount = new Map();
 let spCount = new Map(); // per-step live summons per spawner id (replaces an O(spawners x units) census)
+let factionAlert = {}; // per-faction last-attack shout (teams only): {x, y, t} — the shot's origin, so nearby allies can search the area
+function noteAttack(v, ax, ay) { // a hit on v hints where the enemy is: nearby same-faction searchers overhear it and adopt the area (their own noisy guess, never exact knowledge)
+  if (mode !== "teams" || !v || !FACTIONS[v.faction]) return;
+  factionAlert[v.faction] = { x: Math.max(40, Math.min(FW - 40, ax)), y: Math.max(40, Math.min(FH - 40, ay)), t: simT };
+}
 let stepTick = 0; // per-step counter (throttles/staggers periodic scans)
 // unit-grid key fns (module scope: step() used to reallocate both closures every tick)
 const UGS = 48;
@@ -2357,27 +2586,29 @@ function renderLeafBits() {
   }
 }
 function renderConcBits() {
-  // concrete chips around barricade bases (5s life, fading over the last 2s)
+  // concrete chips around barricade bases (10s life, fading over the last 2s).
+  // Round chips: settled ones batch into one arc fill (same op count as the
+  // old rect batch), falling ones spin as ellipses at the same transform cost.
   ctx.fillStyle = "#a9adb3";
   ctx.beginPath();
   const vx0 = cam.x - 30, vy0 = cam.y - 30, vx1 = cam.x + W / zoom + 30, vy1 = cam.y + H / zoom + 30;
   for (const b of concBits) {
     if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
-    if (b.age > 3 || b.falling) continue;
-    ctx.rect(b.x - b.s, b.y - b.s * 0.6, b.s * 2, b.s * 1.2);
+    if (b.age > 8 || b.falling) continue;
+    ctx.moveTo(b.x + b.s, b.y); ctx.arc(b.x, b.y, b.s, 0, 7);
   }
   ctx.fill();
   for (const b of concBits) {
     if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
     if (b.falling) {
       ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.rot || 0);
-      ctx.fillRect(-b.s, -b.s * 0.6, b.s * 2, b.s * 1.2);
+      ctx.fillStyle = "#a9adb3"; ctx.beginPath(); ctx.ellipse(0, 0, b.s, b.s * 0.6, 0, 0, 7); ctx.fill();
       ctx.restore();
       continue;
     }
-    if (b.age <= 3) continue;
-    ctx.globalAlpha = Math.max(0, 1 - (b.age - 3) / 2);
-    ctx.fillRect(b.x - b.s, b.y - b.s * 0.6, b.s * 2, b.s * 1.2);
+    if (b.age <= 8) continue;
+    ctx.globalAlpha = Math.max(0, 1 - (b.age - 8) / 2);
+    ctx.fillStyle = "#a9adb3"; ctx.beginPath(); ctx.arc(b.x, b.y, b.s, 0, 7); ctx.fill();
   }
   ctx.globalAlpha = 1;
 }
@@ -2598,7 +2829,7 @@ function paintAt(x, y) {
   }
   if (now - lastPaint < 30) return; lastPaint = now;
   if (brush.spawner) { const ps0 = placeSpawner(x, y); if (ps0 && strokeNew) strokeNew.push({ arr: spawners, o: ps0 }); return; } // drag trail places silently; tapping selects (see pointerdown)
-  if (brush.unit === "tree") { const pt0 = plantTree(x, y); if (pt0 && strokeNew) strokeNew.push({ arr: trees, o: pt0 }); return; }
+  if (brush.unit === "tree") { const pt0 = plantTree(x, y); if (pt0) { if (strokeNew) strokeNew.push({ arr: trees, o: pt0 }); } else if (inWaterAt(floorGridGet(), x, y)) poof(x, y, "#999999", 4); return; } // water refusals puff (spacing refusals stay silent, as before)
   // a fresh placement drops the old selection, so the wheel follows the
   // placement ghost again instead of spinning a wall behind your back
   if (brush.unit === "barricade") {
@@ -2617,6 +2848,7 @@ function paintAt(x, y) {
     }
     const t = plantBarr(x, y);
     if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (strokeNew) strokeNew.push({ arr: trees, o: t }); }
+    else if (inWaterAt(floorGridGet(), x, y)) poof(x, y, "#999999", 4); // water refusals puff at the stroke endpoint (chain hops stay silent, as before)
     return;
   }
   if (FLOOR_DEFS[brush.unit]) {
@@ -2668,17 +2900,49 @@ function targetScore(u, o, d2) {
   }
   return s;
 }
+function canSee(u, ox, oy) { // line of sight: inside sight range, with no concrete wall or trunk on the ray (canopies never block — units spot movement through leaves)
+  const def = UNIT_DEFS[u.kind] || UNIT_DEFS.gunner;
+  const sight = def.sight || 420;
+  const dx = ox - u.x, dy = oy - u.y, d2 = dx * dx + dy * dy;
+  if (d2 > sight * sight) return false;
+  const d = Math.sqrt(d2);
+  if (d < 70) return true; // on top of each other: sensed, not seen
+  const tg = treeGridGet();
+  const n = Math.max(3, Math.min(10, Math.ceil(d / 45)));
+  for (let i = 1; i <= n; i++) {
+    const along = 25 + (d - 40) * i / (n + 1); // skip own footing, stop at the target's skin
+    const px = u.x + dx / d * along, py = u.y + dy / d * along;
+    const cell = tg.get(tgk(px, py));
+    if (!cell) continue;
+    for (const t of cell) {
+      if (t.kind === "barr") {
+        const s = barrSeg(t);
+        if (segDist(px, py, s[0], s[1], s[2], s[3]) < BARR_HW + 3) return false;
+      } else {
+        const rx = t.x - px, ry = t.y - py;
+        if (rx * rx + ry * ry < 14 * 14) return false; // trunk wood only, never the canopy
+      }
+    }
+  }
+  return true;
+}
 function acquire(u) {
   // inlined hot loop: was isEnemy()+targetScore() calls per candidate
   // (~70k calls/tick at 400 units). Identical scoring, no call overhead.
+  // Range-gated by sight: units know enemies are present (see the search
+  // branch) but never learn exact positions beyond what they can see —
+  // best/second below always compete from the seen set only.
   const teams = mode === "teams";
   const uf = u.faction;
+  const sight = ((UNIT_DEFS[u.kind] || UNIT_DEFS.gunner).sight || 420);
+  const sight2 = sight * sight;
   let best = null, bs = Infinity, second = null, ss = Infinity;
   for (let i = 0; i < units.length; i++) {
     const o = units[i];
     if (o === u || o.hp <= 0 || !isFinite(o.x + o.y)) continue;
     if (teams && o.faction === uf) continue;
     const dx = o.x - u.x, dy = o.y - u.y, d2 = dx * dx + dy * dy;
+    if (d2 > sight2) continue; // beyond sight: present, not positioned
     let s = d2 * (0.65 + 0.7 * (o.hp / o.maxHp));
     if (o.tx === u) s *= 0.7;
     else if (o.kind === "sniper") s *= 0.85;
@@ -2689,8 +2953,14 @@ function acquire(u) {
     if (s < bs) { ss = bs; second = best; bs = s; best = o; }
     else if (s < ss) { ss = s; second = o; }
   }
-  // sticky: don't flicker between near-equal targets
-  if (u.tx && u.tx.hp > 0 && isEnemy(u, u.tx)) {
+  // only the seen compete: the scan only gated range, so drop whatever sits
+  // behind concrete or trunk wood (no allocation — just null checks)
+  if (best && !canSee(u, best.x, best.y)) { best = null; bs = Infinity; }
+  if (second && !canSee(u, second.x, second.y)) { second = null; ss = Infinity; }
+  if (!best && second) { best = second; bs = ss; second = null; ss = Infinity; }
+  // sticky: don't flicker between near-equal targets — but the hold needs
+  // eyes too: a target that left sight falls through to the search below
+  if (u.tx && u.tx.hp > 0 && isEnemy(u, u.tx) && canSee(u, u.tx.x, u.tx.y)) {
     const dx = u.tx.x - u.x, dy = u.tx.y - u.y;
     if (targetScore(u, u.tx, dx * dx + dy * dy) < bs * 1.35) {
       u.td = Math.sqrt(dx * dx + dy * dy);
@@ -2803,6 +3073,26 @@ function poof(x, y, c, n) {
     parts.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 0.4 + Math.random()*0.35, max: 0.7, c, s: 1.5 + Math.random()*2.5 });
   }
 }
+// soft-dot sprite cache: round puffs without per-particle arcs. One 48px
+// bake per color (solid core, feathered edge), then plain blits — the same
+// speed class as the old squares, so hundreds per frame stay cheap.
+const dotSprCache = new Map();
+function dotSpr(c) {
+  let s = dotSprCache.get(c);
+  if (s) return s;
+  if (dotSprCache.size > 64) dotSprCache.clear(); // palettes are tiny; a clear just re-bakes lazily
+  s = document.createElement("canvas"); s.width = s.height = 48;
+  const g = s.getContext("2d");
+  g.fillStyle = c;
+  g.beginPath(); g.arc(24, 24, 15, 0, 7); g.fill();
+  g.globalCompositeOperation = "destination-in";
+  const gr = g.createRadialGradient(24, 24, 12, 24, 24, 23);
+  gr.addColorStop(0, "rgba(255,255,255,1)");
+  gr.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = gr; g.fillRect(0, 0, 48, 48);
+  dotSprCache.set(c, s);
+  return s;
+}
 function hitSpark(x, y) {
   for (let i = 0; i < 5; i++) {
     const a = Math.random() * Math.PI * 2, sp = 60 + Math.random() * 200;
@@ -2810,11 +3100,29 @@ function hitSpark(x, y) {
   }
   poof(x, y, "rgba(120,20,20,0.8)", 5);
 }
+// water splash: pale droplets arcing up under gravity plus a flat foam pass.
+// Used for shoreline entry/exit, wading wakes (small), and bullet impacts on
+// water (big, pronounced — no crater). Callers cap parts before calling.
+function splashAt(x, y, big) {
+  const b = big || 1, n = Math.round(10 * b);
+  const cols = ["#dff1ff", "#bfe2ff", "#9ecfff", "#ffffff"];
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.2; // upward fan
+    const sp = (60 + Math.random() * 200) * b;
+    parts.push({ x: x + (Math.random()*10-5), y: y + 6, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - 60, g: 520, life: 0.35 + Math.random()*0.3, max: 0.65, c: cols[(Math.random()*cols.length)|0], s: 1.5 + Math.random()*2 });
+  }
+  poof(x, y + 8, "rgba(220,240,255,0.5)", Math.round(3 * b)); // foam settling on the surface
+}
 
 function ageParts(dt) { // cosmetic particle aging (shared: the sim calls it per step, the loop calls it while paused)
+  // air drag is per sim-second, not per step: a bare *= 0.9 damps 4x harder
+  // per sim-second in slow motion (240 steps) than at 1x (60 steps), so splash
+  // droplets froze mid-air and dribbled down — and weaker at low fps. pow()
+  // keeps the tuned 60fps look exactly (0.9^1) at every speed and frame rate.
+  const dr = Math.pow(0.9, dt * 60);
   for (let i = parts.length - 1; i >= 0; i--) {
     const p = parts[i];
-    p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.9; p.vy *= 0.9;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= dr; p.vy *= dr;
     if (p.g) p.vy += p.g * dt; // gravity (bark flakes arc down, brass drops)
     if (p.grow) p.s += p.grow * dt; // smoke blooms as it drifts
     if (p.vr) p.rot = (p.rot || 0) + p.vr * dt; // tumbling chips spin
@@ -2836,9 +3144,11 @@ function step(dt) {
   coverOcc = new Map();
   tgtCount = new Map();
   spCount = new Map();
+  let liveN = 0; const liveF = {}; // live headcount for the presence gate (targetless units search only while enemies exist)
   for (const u of units) {
     if (u.hp > 0 && u.sp) spCount.set(u.sp, (spCount.get(u.sp) || 0) + 1);
     if (u.hp <= 0 || !isFinite(u.x + u.y)) continue;
+    liveN++; liveF[u.faction] = (liveF[u.faction] || 0) + 1;
     const k = ugk(u.x, u.y);
     let a = grid.get(k); if (!a) { a = []; grid.set(k, a); } a.push(u);
     // same-tick occupancy + target counts (joins/leaves during the tick keep
@@ -2893,22 +3203,28 @@ function step(dt) {
     u.advDesperate = Math.max(0, (u.advDesperate || 0) - dt); // corner-pocket pass: a pinned walk-around slide earns shielding vaults while it lasts (set above, 2s at a time)
     if (u.vaultT > 0) {
       u.vaultT -= dt;
+      u.vaultEl = (u.vaultEl || 0) + dt;
+      // still crossing? one single-cell cover query per vaulting unit
+      // (vaults are rare): any wall whose capsule reaches the unit's cell.
+      // Shared by the touchdown and apex-hold checks below.
+      let deep = false;
+      const dl = BARR_HW + def.radius * 0.7;
+      const cellV = tgU.get(tgk(u.x, u.y));
+      if (cellV) for (const t of cellV) {
+        if (t.kind !== "barr") continue;
+        const s = barrSeg(t);
+        if (segDist(u.x, u.y, s[0], s[1], s[2], s[3]) < dl) { deep = true; break; }
+      }
+      // Failsafe: past 1.6s airborne, land anyway (same cap as before).
+      const airOk = (u.vaultEl || 0) < 1.6;
       if (u.vaultT <= 0) {
-        // touchdown: land with a soft thud, unless still over concrete — then
-        // stay airborne over the next wall instead of landing inside it (one
-        // smooth flight across chains/corners, not hop-grind-hop).
-        // Single-cell cover query: any wall whose capsule reaches the unit's
-        // cell is tested — same boolean as the old full wall scan.
-        let deep = false;
-        const dl = BARR_HW + def.radius * 0.7;
-        const cellV = tgU.get(tgk(u.x, u.y));
-        if (cellV) for (const t of cellV) {
-          if (t.kind !== "barr") continue;
-          const s = barrSeg(t);
-          if (segDist(u.x, u.y, s[0], s[1], s[2], s[3]) < dl) { deep = true; break; }
-        }
-        const dur = u.vaultDur || 0.65;
-        if (deep && dur < 1.6) { u.vaultT = 0.3; u.vaultDur = dur + 0.3; }
+        // touchdown: land with a soft thud — unless still over concrete,
+        // in which case start a fresh hop instead of landing mid-wall and
+        // snapping back up (the old top-up rewound lift from ~0 to ~1: the
+        // visible teleport, and its growing vaultDur sagged mid-flight).
+        // Touchdown lift is ~0 = new-cycle lift, so the re-hop is seamless:
+        // one smooth flight across chains/corners.
+        if (deep && airOk) { u.vaultT = 0.65; u.vaultEl = 0; } // still crossing: fresh hop
         else {
           u.vaultT = 0; u.landT = 0.18;
           // side-lock: remember where this hop landed and which way it was
@@ -2921,20 +3237,11 @@ function step(dt) {
           for (let k = 0; k < 3; k++) // touchdown dust where the boots land
             parts.push({ x: u.x + (Math.random()*10-5), y: u.y + 20, vx: (Math.random()*40-20), vy: -8 - Math.random()*16, life: 0.3, max: 0.3, c: "rgba(190,170,130,0.5)", s: 2 });
         }
-      } else if (u.vaultT < 0.35) {
-        // running out of air while still over concrete: top up the hop before
-        // it expires, so the lift eases back up instead of popping on landing
-        // (same single-cell query as the touchdown check above).
-        const dl = BARR_HW + def.radius * 0.7;
-        let deep = false;
-        const cellV2 = tgU.get(tgk(u.x, u.y));
-        if (cellV2) for (const t of cellV2) {
-          if (t.kind !== "barr") continue;
-          const s = barrSeg(t);
-          if (segDist(u.x, u.y, s[0], s[1], s[2], s[3]) < dl) { deep = true; break; }
-        }
-        const dur = u.vaultDur || 0.65;
-        if (deep && dur < 1.6) { u.vaultDur = dur + (0.35 - u.vaultT); u.vaultT = 0.35; }
+      } else if (deep && airOk && u.vaultT < 0.35) {
+        // crossing: climb back to apex instead of descending into the wall.
+        // Eased (2x) rather than snapped: re-entering concrete mid-descend
+        // (a gap between walls) launches smoothly instead of teleporting up.
+        u.vaultT = Math.min(0.35, u.vaultT + dt * 2);
       }
     }
     u.retarget -= dt;
@@ -2961,6 +3268,8 @@ function step(dt) {
       const dx = u.tx.x - u.x, dy = u.tx.y - u.y;
       const d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
       u.td = d; // live range: cohesion (advancing2) reads this, not a 0.3s-stale acquire value
+      u.seenX = u.tx.x; u.seenY = u.tx.y; // confirmed contact: the search goal if sight breaks
+      u.expX = NaN; u.expY = NaN; u.goalT = 12; // eyes on — no searching
       // lead the target: aim where it will be when the bullet arrives
       const tof = d / def.bulletSpeed;
       const leadX = u.tx.x + (u.tx.vx || 0) * tof * 0.9;
@@ -3068,7 +3377,8 @@ function step(dt) {
       const sMag = 0.9 * (1 + u.boost) * (wounded ? 1.4 : 1) * (underFire ? 1.35 : 1);
       const oxp = -dy / d, oyp = dx / d; // orbit direction
       // run to close distance, to flee wounded, or to break contact and
-      // finish a pressured reload; walk for positioning/strafing/kiting
+      // finish a pressured reload; combat strafing/kiting upgrades to a run
+      // below (any real move intent with a live target), unless hurt/tucked.
       const kite = u.kind === "sniper" && d < def.range * 0.5 && !u.coverHold; // planted snipers hold and pick targets
       const wantRun = fleeing || ((d > def.range || pressured) && !wounded); // fleeing units run; holding wounded limp instead of sprinting
       u.running = !!wantRun;
@@ -3617,11 +3927,12 @@ function step(dt) {
           u.aim = Math.atan2(vdy, vdx); // face the shove
           u.recoil = 1; // visible gun-jab through the normal kick visuals
           u.lungeT = u.lungeDur = 0.3; u.lungeDx = vnx; u.lungeDy = vny; // step-in thrust at the victim (unitFrame leans the body+gun in)
-          for (let k = 0; k < 3; k++) // back-foot dust kicking off the lunge
-            parts.push({ x: u.x - vnx * 10 + (Math.random()*8-4), y: u.y + 20, vx: -vnx * 60 + (Math.random()*40-20), vy: -10 - Math.random()*20, life: 0.35, max: 0.35, c: "rgba(190,170,130,0.55)", s: 2 });
+          for (let k = 0; k < 3; k++) // back-foot spray/dust kicking off the lunge (pale spray when the basher stands in water)
+            parts.push({ x: u.x - vnx * 10 + (Math.random()*8-4), y: u.y + 20, vx: -vnx * 60 + (Math.random()*40-20), vy: -10 - Math.random()*20, life: 0.35, max: 0.35, c: (u.inWater ? "rgba(220,240,255,0.6)" : "rgba(190,170,130,0.55)"), s: 2 });
           poof((u.x + victim.x) / 2, (u.y + victim.y) / 2, "rgba(220,220,220,0.9)", 4);
           victim.hp -= BASH_DMG;
           victim.hitT = simT; // fresh hit: the 10s out-of-combat heal clock restarts
+          noteAttack(victim, u.x, u.y); // shout: the basher is right here — nearby allies overhear it
           victim.burst = (victim.burst || 0) + BASH_DMG;
           if ((victim.helmet || victim.hat) && victim.burst >= 100) { victim.burst = 0; loseHelmet(victim); }
           victim.vx = (victim.vx || 0) + vnx * 130;
@@ -3631,17 +3942,18 @@ function step(dt) {
         }
       }
     } else {
-      // no target: hold the gun where it is. No drifting, no spinning —
-      // targetless gunners stand their muzzle still.
+      // no visible enemy: presence-aware idle. Nobody to shoot — but with
+      // live enemies somewhere, walk the last confirmed contact (or a fresh
+      // search waypoint) instead of standing around. The goal is a memory
+      // or a guess, never live knowledge: reaching it or a 12s expiry
+      // spends it and searches somewhere new.
       u.running = false; u.cornered = false;
       u.crouch = (u.crouch || 0) * Math.max(0, 1 - dt * 4); // stand back up with no target
-      // snipers camp: with no one to shoot, walk to the nearest wood within
-      // reach and wait there instead of standing in the open (gunners keep
-      // their slow drift). No threat axis without a target — nearest trunk
-      // plus a standoff, not the threat-relative cover point. Walls beat
-      // trunks here too.
+      // presence, not position: peacetime keeps the old drift/camp, while
+      // any live enemy puts targetless units on the move
+      const anyFoe = mode === "ffa" ? liveN > 1 : liveN - (liveF[u.faction] || 0) > 0;
       let camped = false;
-      if (u.kind === "sniper" && u.cover && trees.length) {
+      if (u.kind === "sniper" && u.cover && trees.length && !anyFoe) {
         let bt = null, bs = Infinity, bd2 = 0;
         for (const t of trees) {
           const rx = t.x - u.x, ry = t.y - u.y, d2 = rx * rx + ry * ry;
@@ -3657,8 +3969,51 @@ function step(dt) {
         }
       }
       if (!camped) {
-        mvx = Math.cos(u.seed + simT * 0.2) * 0.15;
-        mvy = Math.sin(u.seed * 1.7 + simT * 0.2) * 0.15;
+        if (anyFoe) {
+          // overheard attack: a same-faction ally got hit within the last ~6s
+          // and shouted — adopt the area (own noisy guess, never exact) unless
+          // already chasing this exact shout. Wounded sitters sit it out.
+          if (mode === "teams") {
+            const al = factionAlert[u.faction];
+            if (al && u.alertHeard !== al.t && simT - al.t < 6 && u.hp >= u.maxHp * (u.fleeHp || 0.35)) {
+              const adx = al.x - u.x, ady = al.y - u.y;
+              if (adx * adx + ady * ady < 520 * 520) {
+                u.seenX = Math.max(40, Math.min(FW - 40, al.x + (Math.random() * 160 - 80)));
+                u.seenY = Math.max(40, Math.min(FH - 40, al.y + (Math.random() * 160 - 80)));
+                u.expX = NaN; u.expY = NaN; u.goalT = 12; u.alertHeard = al.t;
+              }
+            }
+          }
+          // search: last confirmed contact first, else a waypoint guess.
+          // Arrival spends the goal; a 12s expiry unsticks unreachable ones.
+          u.goalT -= dt;
+          if (isFinite(u.seenX + u.seenY) && Math.hypot(u.seenX - u.x, u.seenY - u.y) < 60) { u.seenX = NaN; u.seenY = NaN; }
+          if ((!isFinite(u.seenX + u.seenY) && (!isFinite(u.expX + u.expY) || Math.hypot(u.expX - u.x, u.expY - u.y) < 60)) || u.goalT <= 0) {
+            u.seenX = NaN; u.seenY = NaN;
+            // fresh search waypoint, weighted to midfield where contact is likely — never the far corners
+            if (Math.random() < 0.5) { u.expX = 60 + Math.random() * (FW - 120); u.expY = 60 + Math.random() * (FH - 120); }
+            else { u.expX = FW / 2 + (Math.random() + Math.random() - 1) * FW * 0.3; u.expY = FH / 2 + (Math.random() + Math.random() - 1) * FH * 0.3; }
+            u.expX = Math.max(40, Math.min(FW - 40, u.expX)); u.expY = Math.max(40, Math.min(FH - 40, u.expY));
+            u.goalT = 12;
+            u.runLeg = Math.random() < 0.5; // this leg's pace: run some guesses, walk the rest
+          }
+          const hasMem = isFinite(u.seenX + u.seenY);
+          const gx = hasMem ? u.seenX : u.expX, gy = hasMem ? u.seenY : u.expY;
+          const gd = Math.max(1, Math.hypot(gx - u.x, gy - u.y));
+          mvx = (gx - u.x) / gd * 0.7; mvy = (gy - u.y) / gd * 0.7;
+          // face the search: muzzle along the march, settled, no wag
+          let ga = Math.atan2(gy - u.y, gx - u.x) - u.aim;
+          while (ga > Math.PI) ga -= Math.PI * 2; while (ga < -Math.PI) ga += Math.PI * 2;
+          if (Math.abs(ga) > 0.12) u.aim += ga * Math.min(1, dt * 2);
+          // pace: far-off memories (contacts and shouts) are worth running
+          // for; guesses run on eager legs and walk the rest. Hurt units
+          // never sprint toward maybe-enemies.
+          const hurtS = u.hp < u.maxHp * (u.fleeHp || 0.35);
+          u.running = !hurtS && (hasMem ? gd > 160 : (u.runLeg && gd > 120));
+        } else {
+          mvx = Math.cos(u.seed + simT * 0.2) * 0.15;
+          mvy = Math.sin(u.seed * 1.7 + simT * 0.2) * 0.15;
+        }
       }
     }
     // skirmish-line formation: shoulder-to-shoulder spacing, not a ball.
@@ -3805,6 +4160,11 @@ function step(dt) {
       u.smvy = (u.smvy || 0) + (mvy - (u.smvy || 0)) * sk;
     }
     const sml = Math.sqrt(u.smvx * u.smvx + u.smvy * u.smvy);
+    // combat pace: a unit with a live target moves at a run — advances,
+    // strafes, kiting and pressured breaks alike — unless hurt, tucked,
+    // or planted. (Stillness never reads as running: the spd gate below
+    // clears the flag whenever the feet aren't actually moving.)
+    if (u.tx && u.tx.hp > 0 && !u.cornered && !u.coverHold && u.hp >= u.maxHp * (u.fleeHp || 0.35) && sml > 0.3) u.running = true;
     let dvx = 0, dvy = 0;
     if (sml > 0.01) {
       const RUN_MULT = 1.8;
@@ -3836,16 +4196,39 @@ function step(dt) {
     u.spd = spd; // cached for the renderer (legs/stride)
     u.walk += dt * 11 * Math.min(1.8, spd / def.speed);
     u.moving = spd > 8;
-    u.running = u.running && spd > def.speed * (u.spdMul || 1) * 1.15;
-    if (u.running && Math.random() < dt * 2.5) { // kicked-up dust while running
-      parts.push({ x: u.x + (Math.random()*8-4), y: u.y + 22, vx: -u.vx * 0.08 + (Math.random()*20-10), vy: -14 - Math.random()*18, life: 0.4, max: 0.4, c: "rgba(190,170,130,0.55)", s: 2 });
+    // mid-vault units keep their pre-hop pace flag: the hop carries at
+    // 0.85x (under the 1.15x run gate), but dropping lean/bob mid-air and
+    // resuming on landing reads as a teleport between animations.
+    if (!(u.vaultT > 0)) u.running = u.running && spd > def.speed * (u.spdMul || 1) * 1.15;
+    if (u.running && Math.random() < dt * 2.5) { // kicked-up spray/dust while running (pale spray when wading)
+      parts.push({ x: u.x + (Math.random()*8-4), y: u.y + 22, vx: -u.vx * 0.08 + (Math.random()*20-10), vy: -14 - Math.random()*18, life: 0.4, max: 0.4, c: (u.inWater ? "rgba(220,240,255,0.6)" : "rgba(190,170,130,0.55)"), s: 2 });
     }
-    if (u.rollT > 0 && Math.random() < dt * 8) { // dust kicked up by the roll
-      parts.push({ x: u.x + (Math.random()*10-5), y: u.y + 20, vx: (Math.random()*40-20), vy: -10 - Math.random()*20, life: 0.35, max: 0.35, c: "rgba(190,170,130,0.5)", s: 2.2 });
+    if (u.rollT > 0 && Math.random() < dt * 8) { // spray/dust kicked up by the roll (pale spray when rolling through water)
+      parts.push({ x: u.x + (Math.random()*10-5), y: u.y + 20, vx: (Math.random()*40-20), vy: -10 - Math.random()*20, life: 0.35, max: 0.35, c: (u.inWater ? "rgba(220,240,255,0.6)" : "rgba(190,170,130,0.5)"), s: 2.2 });
     }
     const r = def.radius;
     u.x = Math.max(r, Math.min(FW - r, u.x)); u.y = Math.max(r, Math.min(FH - r, u.y));
     u.trunkPrev = u.trunkTouch; u.trunkTouch = null; // this step's contact, counted below
+    // shallow water: track entry/exit off the version-cached floor grid (one
+    // cell lookup per unit — same cost class as the boost lookup above).
+    // In/out transitions splash + play a low vault-like hop (animation only:
+    // no collision skip, no carry). Fresh-out units glisten 5s (wetT); wading
+    // wakes and post-exit drips are throttled puffs, capped with the rest.
+    {
+      const wasW = u.inWater, nowW = inWaterAt(fgU, u.x, u.y);
+      u.inWater = nowW;
+      if (nowW) u.wetT = 5; else if (u.wetT > 0) u.wetT = Math.max(0, u.wetT - dt);
+      u.wadeCd = Math.max(0, (u.wadeCd || 0) - dt);
+      u.wadeHopT = Math.max(0, (u.wadeHopT || 0) - dt);
+      if (nowW !== wasW && (u.wadeCd || 0) <= 0 && (u.rollT || 0) <= 0 && (u.vaultT || 0) <= 0) {
+        if (parts.length < 1200) splashAt(u.x, u.y, 1.2); // shoreline splash, in and out alike (particles only — the hop below is animation and plays even under particle pressure)
+        u.wadeHopT = 0.45; u.wadeCd = 0.9; // little jump over the waterline (vaults skip it: their own landing dip covers the touchdown)
+      }
+      if (nowW && spd > 8 && parts.length < 1200 && Math.random() < dt * 3) // wading wake: small and slow, like the walk through it
+        parts.push({ x: u.x + (Math.random()*16-8), y: u.y + 14, vx: (Math.random()*20-10), vy: -12 - Math.random()*14, life: 0.45, max: 0.45, c: "rgba(220,240,255,0.55)", s: 1.5 + Math.random()*1.5 });
+      else if (!nowW && (u.wetT || 0) > 0 && parts.length < 1200 && Math.random() < dt * 6) // post-exit drips off the glistening body
+        parts.push({ x: u.x + (Math.random()*14-7), y: u.y - 4, vx: (Math.random()*16-8), vy: -10 - Math.random()*20, g: 500, life: 0.4, max: 0.4, c: "rgba(190,220,250,0.7)", s: 1.4 });
+    }
     // Body vs cover: trunks are solid (the canopy overhangs, the trunk
     // blocks); barricades vault (mid-span crossings hop over, ends deflect).
     // Candidates come from the static-cover grid (unit's own cell holds every
@@ -3904,11 +4287,11 @@ function step(dt) {
                 Math.hypot(u.x - (u.vaultLockX || 0), u.y - (u.vaultLockY || 0)) < 55) &&
               ((u.vaultCd || 0) <= 0 || dd < dmin - 3)) {
             u.rollT = 0; u.rollCd = 1.5 + Math.random() * 2; u.rollEnd = simT;
-            u.vaultT = 0.65; u.vaultDur = 0.65; u.pushT = 0;
+            u.vaultT = 0.65; u.vaultDur = 0.65; u.vaultEl = 0; u.pushT = 0;
             u.vaultDx = u.rollDx; u.vaultDy = u.rollDy;
             u.vaultCd = 1.2; u.landT = 0;
-            for (let k = 0; k < 4; k++) // scuffed dust kicking off the hop
-              parts.push({ x: u.x + (Math.random()*8-4), y: u.y + 18, vx: (Math.random()*50-25), vy: -20 - Math.random()*30, life: 0.35, max: 0.35, c: "rgba(190,170,130,0.55)", s: 2 });
+            for (let k = 0; k < 4; k++) // scuffed spray/dust kicking off the hop (pale spray when vaulting over water)
+              parts.push({ x: u.x + (Math.random()*8-4), y: u.y + 18, vx: (Math.random()*50-25), vy: -20 - Math.random()*30, life: 0.35, max: 0.35, c: (u.inWater ? "rgba(220,240,255,0.6)" : "rgba(190,170,130,0.55)"), s: 2 });
             continue;
           }
           if (u.rollT <= 0 && !u.coverHold && !(vEng && barrShield(u, t) && !(u.advDesperate > 0)) &&
@@ -3918,11 +4301,11 @@ function step(dt) {
               ((u.advDesperate || 0) > 0 || ps > 0.06 && ps < 0.94 || (u.pushT || 0) > 0.35) && vsp > 30 && intoWall > Math.max(20, vsp * 0.5) &&
               ((u.vaultCd || 0) <= 0 || dd < dmin - 3)) {
             const first = (u.vaultCd || 0) <= 0;
-            u.vaultT = 0.65; u.vaultDur = 0.65; u.pushT = 0;
+            u.vaultT = 0.65; u.vaultDur = 0.65; u.vaultEl = 0; u.pushT = 0;
             u.vaultDx = u.vx / vsp; u.vaultDy = u.vy / vsp;
             u.vaultCd = 1.2; u.landT = 0;
-            if (first) for (let k = 0; k < 4; k++) // scuffed dust kicking off the hop
-              parts.push({ x: u.x + (Math.random()*8-4), y: u.y + 18, vx: (Math.random()*50-25), vy: -20 - Math.random()*30, life: 0.35, max: 0.35, c: "rgba(190,170,130,0.55)", s: 2 });
+            if (first) for (let k = 0; k < 4; k++) // scuffed spray/dust kicking off the hop (pale spray when vaulting over water)
+              parts.push({ x: u.x + (Math.random()*8-4), y: u.y + 18, vx: (Math.random()*50-25), vy: -20 - Math.random()*30, life: 0.35, max: 0.35, c: (u.inWater ? "rgba(220,240,255,0.6)" : "rgba(190,170,130,0.55)"), s: 2 });
             continue;
           }
           // grind clock: a sustained head-on shove (not a brush or a graze)
@@ -4032,10 +4415,12 @@ function step(dt) {
               const facing = !ct || ct.kind !== "barr" || barrBetween(ct, u, b);
               if (u.coverHold && ct && facing && Math.random() < redir) {
                 chipTree(u.coverTree, b.x, b.y, b);
+                noteAttack(u, b.x - b.vx * 0.3, b.y - b.vy * 0.3); // shot chewed our cover: shout the shot's direction
                 hitU = true; dead = true; break outer;
               }
               u.hp -= b.dmg; fleshHits++;
               u.hitT = simT; // fresh hit: the 10s out-of-combat heal clock restarts
+              noteAttack(u, b.x - b.vx * 0.3, b.y - b.vy * 0.3); // backtrack the round: the shout points where it came from
               u.burst += b.dmg;
               if ((u.helmet || u.hat) && u.burst >= 100) { u.burst = 0; loseHelmet(u); }
               hitSpark(b.x, b.y);
@@ -4062,13 +4447,18 @@ function step(dt) {
         b.trail = null;
       }
       if (!hitU && !hitTree && !out && b.x > 0 && b.y > 0 && b.x < FW && b.y < FH) {
-        addHole(b.x, b.y);
-        triggerRolls(b.x, b.y, b.vx, b.vy, b.faction);
-        // dirt kicked up where the round lands — capped, so sustained fire
-        // can't flood the particle list
-        if (parts.length < 1200)
-          for (let k = 0; k < 3; k++)
-            parts.push({ x: b.x, y: b.y - 2, vx: (Math.random()*60-30), vy: -30 - Math.random()*50, life: 0.4, max: 0.4, c: "rgba(150,130,95,0.7)", s: 2 });
+        if (inWaterAt(floorGridGet(), b.x, b.y)) { // stray round into shallow water: a pronounced splash, never a crater
+          if (parts.length < 1200) splashAt(b.x, b.y, 1.4);
+          triggerRolls(b.x, b.y, b.vx, b.vy, b.faction);
+        } else {
+          addHole(b.x, b.y);
+          triggerRolls(b.x, b.y, b.vx, b.vy, b.faction);
+          // dirt kicked up where the round lands — capped, so sustained fire
+          // can't flood the particle list
+          if (parts.length < 1200)
+            for (let k = 0; k < 3; k++)
+              parts.push({ x: b.x, y: b.y - 2, vx: (Math.random()*60-30), vy: -30 - Math.random()*50, life: 0.4, max: 0.4, c: "rgba(150,130,95,0.7)", s: 2 });
+        }
       }
       bullets.splice(i, 1);
     }
@@ -4170,10 +4560,18 @@ function step(dt) {
       if (holes[i].age > HOLE_LIFE) holes.splice(i, 1);
     }
   }
+  // ground-roll friction is per sim-second like the particle drag above: a
+  // bare *= 0.86 would stop hats ~4x shorter per sim-second in slow motion
+  // (and longer at low fps). pow() keeps the tuned 60fps roll exactly.
+  const hfr = Math.pow(0.86, dt * 60);
   for (let i = helmets.length - 1; i >= 0; i--) {
     const h = helmets[i];
     h.t += dt;
     if (h.t > 10) { helmets.splice(i, 1); continue; } // fallen headgear despawns 10s after knock-off (fades over the last 2s)
+    if (h.y >= h.gy - 2 && inWaterAt(floorGridGet(), h.x, h.y)) { // knocked-off hats that reach water vanish instantly with a splash (rolling hats that wash in go the same way)
+      if (parts.length < 1200) splashAt(h.x, h.y, 1.0);
+      helmets.splice(i, 1); continue;
+    }
     if (!h.onGround) {
       h.vy += 520 * dt; // gravity
       h.x += h.vx * dt; h.y += h.vy * dt; h.rot += h.vr * dt;
@@ -4185,7 +4583,7 @@ function step(dt) {
         } else { h.onGround = true; h.vy = 0; const exy0 = ejectBarr(h.x, h.gy, BARR_HW + 4); h.x = exy0[0]; }
       }
     } else { // roll to a stop
-      h.x += h.vx * dt; h.vx *= 0.86; h.vr *= 0.86; h.rot += h.vr * dt;
+      h.x += h.vx * dt; h.vx *= hfr; h.vr *= hfr; h.rot += h.vr * dt;
       // headgear never comes to rest on concrete either — but walls never
       // move, so once the helmet is nearly stopped its last ejection stands
       // and the full wall scan can rest (rolling helmets still eject).
@@ -4220,7 +4618,7 @@ function step(dt) {
   for (let i = concBits.length - 1; i >= 0; i--) {
     const b = concBits[i];
     b.age += dt;
-    if (b.age > 5) { concBits.splice(i, 1); continue; } // concrete chips dissipate after 5s
+    if (b.age > 10) { concBits.splice(i, 1); continue; } // concrete chips dissipate after 10s
     if (b.falling) { // chips pop off the wall, then settle around the base
       b.vy += 620 * dt;
       b.x += b.vx * dt; b.y += b.vy * dt; b.rot += (b.vr || 0) * dt;
@@ -4405,8 +4803,9 @@ function unitFrame(u) {
   if (moving) { mdx = u.vx / spd; mdy = u.vy / spd; }
   const lean = u.running ? 2.5 : 0;
   let bx = F.bx = u.x + (moving ? mdx * lean : 0);
-  const bob = moving ? Math.abs(Math.sin(u.walk)) * (u.running ? 2.5 : 1.5)
-                     : Math.sin(u.walk * 0.3) * 0.8;
+  const wade = u.inWater ? 0.45 : 1; // wading tread: deliberately small and slow — half the bob, no extra rig
+  const bob = moving ? Math.abs(Math.sin(u.walk)) * (u.running ? 2.5 : 1.5) * wade
+                     : Math.sin(u.walk * 0.3) * 0.8 * wade;
   let by = F.by = u.y - bob + (u.crouch || 0) * (u.kind === "sniper" ? 7 : 4); // snipers lie flat on the ground to shoot
   if (u.vaultT > 0) { // vault hop: body + gun rise over the wall while the shadow stays on the ground
     const vp = Math.max(0, Math.min(1, 1 - u.vaultT / (u.vaultDur || 0.65)));
@@ -4414,6 +4813,10 @@ function unitFrame(u) {
     const vk = Math.sin(sp * Math.PI);
     by -= vk * 11; F.by = by;
     bx += (u.vaultDx || 0) * 4 * vk; F.bx = bx;
+  } else if ((u.wadeHopT || 0) > 0) { // shoreline hop: the same vault grammar at half height on water entry/exit (animation only)
+    const vp = Math.max(0, Math.min(1, 1 - u.wadeHopT / 0.45));
+    const sp = vp * vp * (3 - 2 * vp);
+    by -= Math.sin(sp * Math.PI) * 6; F.by = by;
   } else if ((u.landT || 0) > 0) { // touchdown settle: a small dip as the boots land
     const lp = 1 - u.landT / 0.18;
     by += Math.sin(lp * Math.PI) * 1.8; F.by = by;
@@ -4568,6 +4971,27 @@ function renderUnits(sorted) {
       ctx.restore();
     } else blit(set, F.bx, F.by);
   }
+  // wading waterline: the bottom quarter of a wader's head sits under the
+  // surface (one batched pass in the pond's own blue, before guns and
+  // glisten so rifles and shine stay dry above it; airborne rollers,
+  // shoreline-hoppers and vaults sit it out)
+  ctx.fillStyle = "rgba(79,151,196,0.55)";
+  ctx.beginPath();
+  for (i = 0; i < sorted.length; i++) {
+    u = sorted[i]; F = u._f; if (!F) continue;
+    if (u.inWater && !(u.rollT > 0) && !(u.wadeHopT > 0) && !(u.vaultT > 0)) { ctx.moveTo(F.bx + F.r * 0.77, F.by + F.r * 0.62); ctx.ellipse(F.bx, F.by + F.r * 0.62, F.r * 0.77, F.r * 0.38, 0, 0, 7); }
+  }
+  ctx.fill();
+  // wet glisten: fresh-out waders shine for 5s (one batched white specular
+  // tick at the top of the head — rollers sit out, since the highlight can't
+  // spin with the body and would float beside it)
+  ctx.fillStyle = "rgba(255,255,255,0.38)";
+  ctx.beginPath();
+  for (i = 0; i < sorted.length; i++) {
+    u = sorted[i]; F = u._f; if (!F) continue;
+    if ((u.wetT || 0) > 0 && !(u.rollT > 0)) { ctx.moveTo(F.bx + 3, F.by - 7); ctx.ellipse(F.bx - 4, F.by - 7, 7, 4, -0.5, 0, 7); }
+  }
+  ctx.fill();
   // shouldered rifles, batched per barrel width (gunner 5 / sniper 3).
   // Soldiers carry assault rifles: short wood butt + thick polymer
   // handguard + thin barrel with a top rail, angled box mag, pistol grip
@@ -4766,13 +5190,16 @@ function renderCorpses() {
   // Culled to the viewport (pools + bodies fit in 60px).
   const vx0 = cam.x - 60, vy0 = cam.y - 60, vx1 = cam.x + W / zoom + 60, vy1 = cam.y + H / zoom + 60;
   // blood pools fade fast: full strength to 6s, gone by 8s — long before
-  // the body itself fades (25-30s)
+  // the body itself fades (25-30s). Pools floating in shallow water spread
+  // and thin instead: slow expansion + dilution over the same 8s.
+  const fgC = floorGridGet();
   ctx.fillStyle = "rgba(140,20,20,0.5)";
   ctx.beginPath();
   for (i = 0; i < corpses.length; i++) {
     c = corpses[i];
     if (c.px < vx0 || c.px > vx1 || c.py < vy0 || c.py > vy1) continue;
     if (c.age > 6) continue; // older pools drawn individually below
+    if (inWaterAt(fgC, c.px, c.py)) continue; // water pools spread individually below
     ctx.moveTo(c.px + 14, c.py + 6);
     ctx.ellipse(c.px, c.py + 6, 14, 9, 0, 0, 7);
   }
@@ -4781,7 +5208,11 @@ function renderCorpses() {
     c = corpses[i];
     // pool sits at (px,py) but the body at (x,y): draw if either is visible
     if ((c.px < vx0 || c.px > vx1 || c.py < vy0 || c.py > vy1) && (c.x < vx0 || c.x > vx1 || c.y < vy0 || c.y > vy1)) continue;
-    if (c.age > 6 && c.age <= 8) { // pool fading out ahead of the body
+    if (c.age <= 8 && inWaterAt(fgC, c.px, c.py)) { // spreading + diluting over 8s (gone with the rest at 8)
+      const k = Math.min(1, c.age / 8);
+      ctx.fillStyle = "rgba(160,50,60," + (0.5 * (1 - k)).toFixed(3) + ")";
+      ctx.beginPath(); ctx.ellipse(c.px, c.py + 6, 14 + 14 * k, 9 + 9 * k, 0, 0, 7); ctx.fill();
+    } else if (c.age > 6 && c.age <= 8) { // pool fading out ahead of the body
       ctx.globalAlpha = Math.max(0, 1 - (c.age - 6) / 2);
       ctx.fillStyle = "rgba(140,20,20,0.5)";
       ctx.beginPath(); ctx.ellipse(c.px, c.py + 6, 14, 9, 0, 0, 7); ctx.fill();
@@ -4881,7 +5312,7 @@ function render() {
     ctx.stroke();
     ctx.fillStyle = "#fff";
     ctx.beginPath();
-    for (const b of bullets) { if (b.x < bx0 || b.x > bx1 || b.y < by0 || b.y > by1) continue; ctx.moveTo(b.x + 1, b.y - 1); ctx.rect(b.x - 1, b.y - 1, 2, 2); }
+    for (const b of bullets) { if (b.x < bx0 || b.x > bx1 || b.y < by0 || b.y > by1) continue; ctx.moveTo(b.x + 1.2, b.y); ctx.arc(b.x, b.y, 1.2, 0, 7); }
     ctx.fill();
   }
   for (const p of parts) {
@@ -4905,15 +5336,18 @@ function render() {
       ctx.globalAlpha = ta * 0.45;
       ctx.strokeStyle = "#f4f8ef"; ctx.lineWidth = 2.5;
       ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(tx, ty); ctx.stroke();
-    } else if (p.flake) { // tumbling bark chip: small spinning rect
+    } else if (p.flake) { // tumbling chip: spinning sliver (bark keeps its rect; concrete streakers set soft for a round one)
       ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot || 0);
-      ctx.fillStyle = p.c; ctx.fillRect(-p.s, -p.s * 0.5, p.s * 2, p.s);
+      if (p.soft) { ctx.fillStyle = p.c; ctx.beginPath(); ctx.ellipse(0, 0, p.s, p.s * 0.35, 0, 0, 7); ctx.fill(); }
+      else { ctx.fillStyle = p.c; ctx.fillRect(-p.s, -p.s * 0.5, p.s * 2, p.s); }
       ctx.restore();
     } else {
-      // debris puffs read the same as squares at these sizes, and skip
-      // the per-particle arc path cost (hundreds per frame in big fights)
-      ctx.fillStyle = p.c;
-      ctx.fillRect(p.x - p.s, p.y - p.s, p.s * 2, p.s * 2);
+      // soft round puffs via a color-keyed sprite cache: one blit per
+      // particle with no per-particle path cost (same speed class as the
+      // old squares), and smoke blooms into a soft dot instead of a box
+      const spr = dotSpr(p.c);
+      const d = p.s * 3.2;
+      ctx.drawImage(spr, p.x - d / 2, p.y - d / 2, d, d);
     }
     ctx.globalAlpha = 1;
   }
@@ -4924,17 +5358,17 @@ function render() {
 }
 // Cap message under the placement ghost (screen-constant size): dark outline
 // so it reads on grass at any zoom.
-function ghostCapMsg(gx, gy, yOff) {
+function ghostCapMsg(gx, gy, yOff, msg) {
   const fs = 15 / zoom;
   octx.globalAlpha = 1;
   octx.font = "bold " + fs + "px system-ui, sans-serif";
   octx.textAlign = "center";
-  const msg = "Can't place any more of that!";
+  const m = msg || "Can't place any more of that!";
   octx.lineWidth = Math.max(1, 4 / zoom);
   octx.strokeStyle = "rgba(10,12,8,0.7)";
-  octx.strokeText(msg, gx, gy + yOff);
+  octx.strokeText(m, gx, gy + yOff);
   octx.fillStyle = "#ff6b5e";
-  octx.fillText(msg, gx, gy + yOff);
+  octx.fillText(m, gx, gy + yOff);
   octx.globalAlpha = 1;
 }
 function drawGhost() {
@@ -4945,13 +5379,17 @@ function drawGhost() {
   if (brush.eraser && mouse.x > 0) { // erase cursor: the ghost IS the brush here (it never shows otherwise)
     octx.setTransform(DPR * zoom, 0, 0, DPR * zoom, -cam.x * DPR * zoom, -cam.y * DPR * zoom);
     const gx = mouse.x / zoom + cam.x, gy = mouse.y / zoom + cam.y;
-    // footprint-accurate per tab: the picked flooring kind wipes whatever
-    // the 22px cursor touches, units pick within 26, trees within 40,
+    // footprint-accurate per tab: the flooring eraser carves whatever the
+    // wheel-sized cursor touches, units pick within 26, trees within 40,
     // walls within 30 — each only inside its own selected category
-    const er = brush.tab === "flooring" ? 22 : (brush.tab === "objects" ? (brush.unit === "barricade" ? 30 : 40) : 26);
+    const er = brush.tab === "flooring" ? eraseR : (brush.tab === "objects" ? (brush.unit === "barricade" ? 30 : 40) : 26);
     octx.globalAlpha = 0.85;
     octx.strokeStyle = brush.tab === "flooring" ? (FLOOR_COL[brush.unit] || FLOOR_COL.dirt) : "#fff";
-    octx.lineWidth = 1.5; octx.setLineDash([5, 5]);
+    // zoom-compensated stroke: the radius stays exact (it promises the wipe
+    // footprint), but a world-unit hairline went sub-pixel and invisible
+    // zoomed out (1.5 world ≈ 0.5 screen px at fit) — this keeps a constant
+    // readable screen width at every zoom.
+    octx.lineWidth = 1.5 / zoom; octx.setLineDash([5 / zoom, 5 / zoom]);
     octx.beginPath(); octx.arc(gx, gy, er, 0, 7); octx.stroke();
     octx.setLineDash([]); octx.globalAlpha = 1;
     return;
@@ -4967,6 +5405,7 @@ function drawGhost() {
   octx.setTransform(DPR * zoom, 0, 0, DPR * zoom, -cam.x * DPR * zoom, -cam.y * DPR * zoom);
   {
     const gx = mouse.x / zoom + cam.x, gy = mouse.y / zoom + cam.y;
+    const wetNo = (brush.unit === "tree" || brush.unit === "barricade") && inWaterAt(floorGridGet(), gx, gy); // cursor over open water: planting refuses here, so the ghost warns like the cap does
     if (brush.spawner) {
       const sC = atCap ? RC : (FACTIONS[brush.faction] || "#fff");
       octx.globalAlpha = 0.8;
@@ -4988,39 +5427,43 @@ function drawGhost() {
       return;
     }
     if (brush.unit === "tree") {
+      const bad = atCap || wetNo;
       octx.globalAlpha = 0.55;
-      octx.strokeStyle = atCap ? RC : "#fff"; octx.lineWidth = atCap ? 2.5 : 1.5; octx.setLineDash([5, 5]);
+      octx.strokeStyle = bad ? RC : "#fff"; octx.lineWidth = bad ? 2.5 : 1.5; octx.setLineDash([5, 5]);
       octx.beginPath(); octx.arc(gx, gy, TREE_R + 4, 0, 7); octx.stroke();
       octx.setLineDash([]);
       octx.globalAlpha = 0.85;
-      octx.fillStyle = atCap ? "#b04038" : "#3a7d33";
+      octx.fillStyle = bad ? "#b04038" : "#3a7d33";
       octx.beginPath(); octx.arc(gx, gy - 24, 39, 0, 7); octx.fill();
-      octx.fillStyle = atCap ? "#c05348" : "#4c9440";
+      octx.fillStyle = bad ? "#c05348" : "#4c9440";
       octx.beginPath(); octx.arc(gx - 8, gy - 33, 20, 0, 7); octx.fill();
-      octx.strokeStyle = atCap ? "#7a3a30" : "#5a4026"; octx.lineCap = "round"; octx.lineWidth = 27;
+      octx.strokeStyle = bad ? "#7a3a30" : "#5a4026"; octx.lineCap = "round"; octx.lineWidth = 27;
       octx.beginPath(); octx.moveTo(gx, gy - 6); octx.lineTo(gx, gy + 36); octx.stroke();
       octx.globalAlpha = 1;
       if (atCap) ghostCapMsg(gx, gy, 62);
+      else if (wetNo) ghostCapMsg(gx, gy, 62, "Can't place this on water");
       return;
     }
     if (brush.unit === "barricade") {
       const a = (pendingBarrDir | 0) * Math.PI / 4, ca = Math.cos(a);
       octx.save(); octx.translate(gx, gy); octx.rotate(a);
-      octx.globalAlpha = 0.5; octx.fillStyle = atCap ? "#c07a72" : "#b9bdc4";
+      const bad = atCap || wetNo;
+      octx.globalAlpha = 0.5; octx.fillStyle = bad ? "#c07a72" : "#b9bdc4";
       octx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2);
-      octx.globalAlpha = 0.5; octx.fillStyle = atCap ? "#d98880" : "#d5d9df"; // sunlit top face, like the real wall
+      octx.globalAlpha = 0.5; octx.fillStyle = bad ? "#d98880" : "#d5d9df"; // sunlit top face, like the real wall
       octx.fillRect(-BARR_HALF + 3, -BARR_HW + 4, BARR_HALF * 2 - 6, BARR_HW * 2 - 8);
       const gUp = ca > 0 ? ca : 0, gDn = ca < 0 ? -ca : 0; // wash the up-facing long edge
-      octx.fillStyle = atCap ? RC : "#fff";
+      octx.fillStyle = bad ? RC : "#fff";
       if (gUp > 0.01) { octx.globalAlpha = 0.35 * gUp; octx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, 3); }
       if (gDn > 0.01) { octx.globalAlpha = 0.35 * gDn; octx.fillRect(-BARR_HALF, BARR_HW - 3, BARR_HALF * 2, 3); }
       octx.globalAlpha = 0.8;
-      octx.strokeStyle = atCap ? RC : "#fff"; octx.lineWidth = atCap ? 2.5 : 1.5; octx.setLineDash([5, 4]);
+      octx.strokeStyle = bad ? RC : "#fff"; octx.lineWidth = bad ? 2.5 : 1.5; octx.setLineDash([5, 4]);
       octx.strokeRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2);
       octx.setLineDash([]);
       octx.restore();
       octx.globalAlpha = 1;
       if (atCap) ghostCapMsg(gx, gy, 46);
+      else if (wetNo) ghostCapMsg(gx, gy, 46, "Can't place this on water");
       return;
     }
     if (FLOOR_DEFS[brush.unit]) {
@@ -5059,8 +5502,8 @@ function loop(now) {
   window.__tick = (window.__tick || 0) + 1;
   const rdt = (now - last) / 1000; last = now;
   let dt = Math.min(0.05, rdt);
-  if (rdt > 0) { // fps tracks real wall-clock rate (dt above is clamped for the sim)
-    fpsFrames++; fpsTime += Math.min(rdt, 0.25);
+  if (rdt > 0) { // fps tracks real wall-clock rate (dt above is clamped for the sim): every frame counts fully, so a slow frame dilutes the average honestly — capping its contribution would only ever inflate the number
+    fpsFrames++; fpsTime += rdt;
     if (fpsTime >= 0.5 && fpsEl) {
       const f = Math.round(fpsFrames / fpsTime);
       fpsFrames = 0; fpsTime = 0;
@@ -5131,7 +5574,7 @@ function trashReset() {
   refreshBar();
 }
 function clearField() {
-  units = []; trees = []; floors = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
+  units = []; trees = []; floors = []; floorCuts = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
   winner = null; everMulti = false; totalKills = 0;
   playing = false;
   bumpTrees(); bumpFloors(); clearFloorLayer();
@@ -5168,6 +5611,7 @@ function snapshotField() {
       ? { barr: 1, x: t.x, y: t.y, dir: t.dir | 0, hp: t.hp, maxHp: t.maxHp }
       : { x: t.x, y: t.y, seed: t.seed, seq: (t.seq === undefined ? t._seq : t.seq) || 0, hp: t.hp, maxHp: t.maxHp, qi: t.qi }),
     floors: floors.map(f => ({ x: f.x, y: f.y, r: f.r, kind: f.kind, boost: f.boost })),
+    cuts: floorCuts.map(c => ({ x: c.x, y: c.y, r: c.r, kind: c.kind })),
     spawners: spawners.map(s => ({ x: s.x, y: s.y, kind: s.kind, faction: s.faction, maxUnits: s.maxUnits, cd: s.cd, spawnR: s.spawnR })) };
 }
 async function saveFieldNow() {
@@ -5194,7 +5638,7 @@ async function restoreField() {
       if (d && (d.trees || d.floors || d.spawners || d.size)) {
         try {
           if (d.size && FIELD_SCALES[d.size]) fieldSize = d.size; // restore the saved field size first: resize() scales to it
-          trees.length = 0; floors.length = 0; spawners.length = 0;
+          trees.length = 0; floors.length = 0; floorCuts.length = 0; spawners.length = 0;
           for (const s of (d.trees || [])) {
             if (!s || !isFinite(+s.x) || !isFinite(+s.y)) continue;
             let sq = +s.seq;
@@ -5209,6 +5653,11 @@ async function restoreField() {
             if (!f || !isFinite(+f.x) || !isFinite(+f.y) || !(+f.r > 0)) continue;
             const fk = FLOOR_DEFS[f.kind] ? f.kind : "dirt"; // unknown kinds heal to dirt; boost always comes from the defs
             floors.push({ x: +f.x, y: +f.y, r: +f.r, kind: fk, boost: FLOOR_DEFS[fk].boost });
+          }
+          for (const f of (d.cuts || [])) {
+            if (!f || !isFinite(+f.x) || !isFinite(+f.y) || !(+f.r > 0)) continue;
+            if (!FLOOR_DEFS[f.kind]) continue; // unknown kinds never carve
+            floorCuts.push({ x: +f.x, y: +f.y, r: +f.r, kind: f.kind });
           }
           for (const s of (d.spawners || [])) {
             if (!s || !UNIT_DEFS[s.kind] || !isFinite(+s.x) || !isFinite(+s.y)) continue;
@@ -5330,7 +5779,7 @@ setInterval(() => {
     }
   } else { stallCount = 0; lastTickSeen = t; }
 }, 500);
-window.battleSim = { spawn, plantTree, plantBarr, plantFloor, placeSpawner, chipTree, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, floors: () => floors, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bgTiles: grassTiles.length, hole: holes.length, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); } };
+window.battleSim = { spawn, plantTree, plantBarr, plantFloor, placeSpawner, chipTree, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, floors: () => floors, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bgTiles: grassTiles.length, hole: holes.length, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); }, noteAttack, factionAlert: () => factionAlert, inWaterAt, splashAt, floorGridGet, floorBoostAt };
 
 </script>
 </body>
