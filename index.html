@@ -6,7 +6,7 @@
 <title>Big Tussle</title>
 </head>
 <body>
-<!-- portable standalone build of Big Tussle, generated 2026-11-25 from the editor index.html — self-contained, no engine needed -->
+<!-- portable standalone build of Big Tussle, generated 2026-11-26 from the editor index.html — self-contained, no engine needed -->
 <style>
   /* Dark-styled UI (bars/dock are near-black pills), so declare it: browsers
      with auto-dark / night-mode content features then leave our pixels alone
@@ -190,6 +190,13 @@
   #fps.mid { color:#f2c531; border-color:rgba(242,197,49,.55); }
   #fps.low { color:#ff6b5e; border-color:rgba(255,90,80,.55); }
   @media (max-width:640px) { #fps { font-size:20px; padding:5px 10px; min-width:52px; } }
+  @media (max-width:640px) {
+    /* narrow screens: the top bar fills the full width, so the corner pills
+       would sit on top of it (covering the faction dots / tallies) — drop
+       them below the bar instead, where they float over the field */
+    #fps { top:60px; right:8px; }
+    #ver { top:60px; left:8px; }
+  }
   /* version tag: small pill pinned to the top-left (text set from GAME_VERSION) */
   #ver {
     position:fixed; top:8px; left:10px; z-index:10; pointer-events:none;
@@ -205,7 +212,7 @@
 
 <div id="topWrap"><div id="bar"></div></div>
 <div id="bbar"></div>
-<div id="ver">v0.0.7</div>
+<div id="ver">v0.0.8</div>
 <div id="fps">60</div>
 <canvas id="cv" tabindex="0"></canvas>
 <canvas id="ov"></canvas>
@@ -234,8 +241,8 @@
 "use strict";
 // GAME_VERSION is the single source of truth for the version tag (#ver,
 // top-left). It is bumped ONLY when the user explicitly says so — never
-// as part of any other change. (v0.0.4, v0.0.5, v0.0.6, v0.0.7: bumped by explicit user order.)
-const GAME_VERSION = "v0.0.7";
+// as part of any other change. (v0.0.4, v0.0.5, v0.0.6, v0.0.7, v0.0.8: bumped by explicit user order.)
+const GAME_VERSION = "v0.0.8";
 /* ============================================================
    BATTLE SIM — add a unit by adding one entry to UNIT_DEFS.
    Required fields: hp, speed, range, interval, damage, bulletSpeed,
@@ -255,16 +262,16 @@ const FACTIONS = {
 };
 // spawn-menu categories: each category button opens a compact variant row
 // below the dock. Soldiers/Snipers live under the Soldiers tab, Trees/
-// Barricades under the Objects tab, Water under the Flooring tab. To add a
-// future variant (e.g. a new barricade, or the second water kind): append
-// its id to the category's variants here (+ a UNIT_INFO entry below, and a
-// sim def / plant path if the brush needs one).
+// Barricades under the Objects tab, both water depths under the Flooring tab's
+// Water button. To add a future variant (e.g. a new barricade): append its id
+// to the category's variants here (+ a UNIT_INFO entry below, and a sim def /
+// plant path if the brush needs one).
 const UNIT_CATS = {
   soldiers:   { label: "Soldiers",   tab: "soldiers", variants: ["gunner"] },
   snipers:    { label: "Snipers",    tab: "soldiers", variants: ["sniper"] },
   trees:      { label: "Trees",      tab: "objects",  variants: ["tree"] },
   barricades: { label: "Barricades", tab: "objects",  variants: ["barricade"] },
-  waters:     { label: "Water",      tab: "flooring", variants: ["water"] },
+  waters:     { label: "Water",      tab: "flooring", variants: ["water", "deepwater"] },
 };
 // unit info window copy (Description for every brush, Stats where listed,
 // Abilities only where listed). Health mirrors the sim defs (UNIT_DEFS hp,
@@ -287,6 +294,8 @@ const UNIT_INFO = {
                stats: [{ k: "Unit Movespeed", v: "0.80x" }] },
   water:    { name: "Shallow Water", desc: "Shallow Water that units need to wade through.",
                stats: [{ k: "Unit Movespeed", v: "0.75x" }] },
+  deepwater:{ name: "Deep Water", desc: "Very deep water that units must swim through.",
+               stats: [{ k: "Unit Movespeed", v: "0.50x" }] },
 };
 const FACTION_KEYS = Object.keys(FACTIONS);
 const DARK = { red:"#8e2a22", blue:"#1f6396", yellow:"#9a7a15", purple:"#5f4390" };
@@ -451,6 +460,13 @@ function attachInput() {
             frx0 = Math.min(frx0, o.x - o.r); fry0 = Math.min(fry0, o.y - o.r);
             frx1 = Math.max(frx1, o.x + o.r); fry1 = Math.max(fry1, o.y + o.r);
             floors.splice(i, 1); frN++;
+            if (o._healed && o._healed.length) { // this dab healed carves on the way in — put them back so the undo is exact
+              for (const hc of o._healed) {
+                floorCuts.push(hc);
+                frx0 = Math.min(frx0, hc.x - hc.r); fry0 = Math.min(fry0, hc.y - hc.r);
+                frx1 = Math.max(frx1, hc.x + hc.r); fry1 = Math.max(fry1, hc.y + hc.r);
+              }
+            }
           }
         }
         if (frN) { bumpFloors(); repaintFloorRect(frx0 - 2, fry0 - 2, frx1 + 2, fry1 + 2); }
@@ -694,7 +710,7 @@ function pickVariant(v) { // variant chosen from the category row: select it, ke
   brush.unit = v; brush.eraser = false;
   for (const c of Object.keys(UNIT_CATS)) if (UNIT_CATS[c].variants.includes(v)) {
     catLast[c] = v;
-    brush.tab = UNIT_CATS[c].tab; // the variant's own tab (soldiers or objects)
+    brush.tab = UNIT_CATS[c].tab; // the variant's own tab (soldiers, objects or flooring)
     if (UNIT_DEFS[v]) lastGunnerUnit = v; // soldiers-tab pick remembered across Objects trips
     else { brush.spawner = false; selSp = null; hideSpanel(); hideSppre(); } // objects can't have spawners
   }
@@ -734,8 +750,7 @@ function buildBar() {
   // category buttons (Soldiers, Snipers / Trees, Barricades / Water) — each
   // opens the compact variant row below the dock instead of placing directly.
   // Dirt, concrete and mud stay direct-pick Flooring buttons (no sub-menu);
-  // Water is the only Flooring kind with a sub-menu, ready for the second
-  // water kind (just append its id to waters.variants).
+  // Water holds both depths (shallow + deep) in its sub-menu.
   btabSold = document.createElement("span"); btabSold.className = "bgroup";
   btabObj = document.createElement("span"); btabObj.className = "bgroup";
   btabFloor = document.createElement("span"); btabFloor.className = "bgroup";
@@ -1140,17 +1155,17 @@ const HOLE_VARS = 4; // baked crater variants (per-hole look, zero per-frame cos
 let holeSprs = [];
 function buildHoleSprites() {
   holeSprs = [];
-  const r = 4, ext = 13;
+  const r = 2, ext = 9; // bullet-head radius is 1.2px, so craters stay small (dark core ~2px + lip)
   for (let v = 0; v < HOLE_VARS; v++) {
     const [c, g] = canvas2d(ext * 2, ext * 2 - 4), cx = ext, cy = ext - 2;
     for (let i = 0; i < 8; i++) {
       const a = Math.random() * Math.PI * 2, d = r * (0.9 + Math.random() * 1.1);
       g.fillStyle = Math.random() < 0.5 ? "rgba(88,68,40,0.75)" : "rgba(48,38,22,0.75)";
-      g.beginPath(); g.arc(cx + Math.cos(a) * d, cy + Math.sin(a) * d * 0.7, 0.8 + Math.random() * 1.7, 0, 7); g.fill();
+      g.beginPath(); g.arc(cx + Math.cos(a) * d, cy + Math.sin(a) * d * 0.7, 0.4 + Math.random() * 0.9, 0, 7); g.fill();
     }
     g.fillStyle = "rgba(104,84,50,0.9)";
     g.beginPath(); g.ellipse(cx, cy, r + 1.5, (r + 1.5) * 0.72, 0, 0, 7); g.fill();
-    g.strokeStyle = "rgba(255,238,200,0.35)"; g.lineWidth = 1.5;
+    g.strokeStyle = "rgba(255,238,200,0.35)"; g.lineWidth = 1;
     g.beginPath(); g.ellipse(cx, cy, r + 1.5, (r + 1.5) * 0.72, 0, 0.3, Math.PI - 0.3); g.stroke();
     const gr = g.createRadialGradient(cx, cy, 0.5, cx, cy + 1, r);
     gr.addColorStop(0, "rgba(6,6,4,0.96)");
@@ -1169,7 +1184,7 @@ function drawHoleOn(c, h) {
   if (s) c.drawImage(s.c, h.x - s.a, h.y - s.b, s.w, s.h);
 }
 function addHole(x, y) {
-  const h = { x, y, r: 4, age: 0, var: (Math.random() * HOLE_VARS) | 0 };
+  const h = { x, y, r: 2, age: 0, var: (Math.random() * HOLE_VARS) | 0 };
   holes.push(h); // drawn live every frame from tiny sprites — no baked layer to maintain
   if (holes.length > 2500) holes.shift();
 }
@@ -1311,20 +1326,26 @@ function groundLayers() {
     for (const f of floors) {
       if (f.x + f.r < ex0 || f.x - f.r > ex1 || f.y + f.r < ey0 || f.y - f.r > ey1) continue;
       const c = FLOOR_COL[f.kind] || FLOOR_COL.dirt;
+      // live circles run under the identity transform (the world transform
+      // is only installed after this block), so map to device px like the
+      // blits above: raw world coords would pin blobs near the origin at
+      // ~1:1 whatever the camera/zoom — freshly placed ponds read as missing
+      // (while the sim already wades there). Culling above stays in world.
+      const X = (f.x - cam.x) * s, Y = (f.y - cam.y) * s, R = f.r * s;
       const cuts = cutsFor(f);
       if (cuts.length) {
         flush(); // carved blobs draw singly with their mask (unchanged)
         if (c !== runCol) { ctx.fillStyle = c; runCol = c; }
         ctx.beginPath();
-        ctx.moveTo(f.x + f.r, f.y); ctx.ellipse(f.x, f.y, f.r, f.r, 0, 0, 7);
-        for (const t of cuts) { ctx.moveTo(t.x + t.r, t.y); ctx.ellipse(t.x, t.y, t.r, t.r, 0, 0, 7, true); }
+        ctx.moveTo(X + R, Y); ctx.ellipse(X, Y, R, R, 0, 0, 7);
+        for (const t of cuts) { const TX = (t.x - cam.x) * s, TY = (t.y - cam.y) * s, TR = t.r * s; ctx.moveTo(TX + TR, TY); ctx.ellipse(TX, TY, TR, TR, 0, 0, 7, true); }
         ctx.fill("evenodd");
         ctx.beginPath();
         continue;
       }
       if (c !== runCol) { flush(); ctx.fillStyle = c; runCol = c; ctx.beginPath(); }
-      ctx.moveTo(f.x + f.r, f.y);
-      ctx.ellipse(f.x, f.y, f.r, f.r, 0, 0, 7);
+      ctx.moveTo(X + R, Y);
+      ctx.ellipse(X, Y, R, R, 0, 0, 7);
       batch = true;
     }
     flush();
@@ -1345,13 +1366,21 @@ function groundLayers() {
 
 // ---------- spawning / editing ----------
 const MAX_UNITS = 500; // per-faction live-unit cap: each faction fields up to 500 of its own
-function factionCount(f) { let n = 0; for (const u of units) if (u.faction === f) n++; return n; }
+function factionCount(f) { let n = 0; for (const u of units) if (u.hp > 0 && u.faction === f) n++; return n; }
 function spawn(kind, faction, x, y) {
   if (factionCount(faction) >= MAX_UNITS) return null;
   const d = UNIT_DEFS[kind];
+  if (!d) return null;
+  // clamp into the field like every other plant path (tryUnitDab can hand an
+  // OOB cursor from the void margins when zoomed out; the step clamp healed
+  // it a tick later, but the first tick's grid key could miss it) — in-field
+  // spawns are byte-identical, this only affects out-of-bounds calls.
+  x = Math.max(d.radius, Math.min(FW - d.radius, x));
+  y = Math.max(d.radius, Math.min(FH - d.radius, y));
   const u = {
     id: uid++, kind, faction, x, y,
-    hp: d.hp, maxHp: d.hp,
+    hp: d.hp, maxHp: d.hp, dead: false, // dead flips at kill (double-kill guard); the removal sweep reads hp, unchanged
+    radius: d.radius, // cached body radius (the bullet loop reads the victim's radius per candidate — a table lookup there showed up hot)
     helmet: kind !== "sniper", hat: kind === "sniper", // sniper camo hats pop off just like helmets
     burst: 0, strafeDir: Math.random() < 0.5 ? -1 : 1, strafeT: 1 + Math.random() * 2, boost: 0,
     ammo: d.mag, reloading: 0,
@@ -1359,7 +1388,7 @@ function spawn(kind, faction, x, y) {
     lungeT: 0, lungeDur: 0.3, lungeDx: 0, lungeDy: 0, // gun-bash lunge: a quick step-in thrust at the victim (visual only, decays in step, read by unitFrame)
     aim: Math.random() * Math.PI * 2, cool: Math.random() * d.interval,
     walk: Math.random() * 10, moving: false, running: false, spd: 0, flash: 0, retarget: Math.random() * 0.2,
-    tx: null, vx: 0, vy: 0, smvx: 0, smvy: 0, seed: Math.random() * 1000, _f: null,
+    tx: null, vx: 0, vy: 0, smvx: 0, smvy: 0, seed: Math.random() * 1000, _f: null, _dec: null,
     rollT: 0, rollCd: Math.random() * 1.5, rollDx: 0, rollDy: 0, rollRot: 0, crouch: 0,
     vaultT: 0, vaultCd: 0, vaultDur: 0.65, vaultEl: 0, vaultDx: 1, vaultDy: 0, // barricade-vault state (hop over mid-span crossings, firing all the way)
     hitT: -1e9, // game-time of the last hit taken (drives the 10s out-of-combat heal surge)
@@ -1370,9 +1399,10 @@ function spawn(kind, faction, x, y) {
     cover: Math.random() < (kind === "sniper" ? 1.0 : 0.95), coverSide: Math.random() < 0.5 ? -1 : 1, coverTree: null, coverHold: false, // snipers always work cover when any stands
     seenX: NaN, seenY: NaN, expX: NaN, expY: NaN, goalT: 12, // search state: last confirmed contact + waypoint + its 12s expiry (NaN = none)
     alertHeard: -1e9, runLeg: false, // last overheard shout adopted (dedups repeat shouts) + this waypoint leg's pace (run some guesses, walk the rest)
-    inWater: false, wetT: 0, wadeHopT: 0, wadeCd: 0, // shallow-water state: inside now / glistening after exit (5s) / shoreline-hop anim / hop cooldown
+    inWater: false, wetT: 0, wadeHopT: 0, wadeCd: 0, inDeep: false, // water state: inside now (either depth) / glistening after exit (5s) / shoreline-hop anim / hop cooldown / inside DEEP water now (half-submerged)
     spdMul: 0.9 + Math.random() * 0.2, // individual pace: no two gunners march alike
     sp: 0, // spawner id that summoned this unit (0 = hand-placed)
+    _bwT: 0, _bw: null, _bwD: 0, // strafe-bounce nearest-wall cache (marked pre-step, read mid-step; tick-gated)
 // perf-cache fields (pre-initialized so every unit shares one hidden class;
 // the step code only ever assigns these, never adds new shapes mid-battle)
     _e40: false, allyBlock: false, _advX: 0, _advY: 0, _advT: null, _advDone: false,
@@ -1386,7 +1416,7 @@ function spawn(kind, faction, x, y) {
   units.push(u);
   // summoned/placed straight into water starts wet: no shoreline crossing
   // happened, so the first step must not fake an entry splash or hop.
-  { const wet0 = inWaterAt(floorGridGet(), x, y); u.inWater = wet0; u.wetT = wet0 ? 5 : 0; }
+  { const wet0 = inWaterAt(floorGridGet(), x, y); u.inWater = wet0; u.inDeep = wet0 && inDeepWaterAt(floorGridGet(), x, y); u.wetT = wet0 ? 5 : 0; }
   return u;
 }
 function eraseCatVariants() { // the UNIT_CATS variants the eraser may wipe: the selected category's own kinds (flooring: the picked kind itself)
@@ -1566,6 +1596,11 @@ function refreshSpanel() {
   const p = document.getElementById("spanel");
   if (!p || p.hidden) return;
   if (!spawners.includes(selSp)) { selSp = null; hideSpanel(); return; }
+  // the spawner lives in world coords but the panel floats in screen coords:
+  // re-anchor every refresh (heartbeat + tweaks), or panning/zooming/resizing
+  // leaves the panel pointing at empty space where the spawner used to be
+  p.style.left = Math.max(8, Math.min(window.innerWidth - 250, (selSp.x - cam.x) * zoom + 26)) + "px";
+  p.style.top = Math.max(58, Math.min(window.innerHeight - 230, (selSp.y - cam.y) * zoom - 90)) + "px";
   document.getElementById("spdot").style.background = FACTIONS[selSp.faction] || "#fff";
   document.getElementById("sptitle").textContent = `${selSp.kind} spawner`;
   const mx = document.getElementById("spmax"), mv = document.getElementById("spmaxv");
@@ -1834,18 +1869,19 @@ function plantBarr(x, y) {
 // grid rebuilt only when the floor version moves (placements/erases).
 const DIRT_R = 36; // default dirt brush radius (wheel resizes 12..FLOOR_R_MAX)
 const FLOOR_R_MAX = 360; // dirt brush max radius — 3x the original 120 (blob count itself is uncapped)
-const FLOOR_COL = { dirt: "#9c7c4c", concrete: "#8f959c", mud: "#6e4f2e", water: "#4f97c4" }; // packed-dirt tan, industrial gray, dark mud brown, shallow-water blue
+const FLOOR_COL = { dirt: "#9c7c4c", concrete: "#8f959c", mud: "#6e4f2e", water: "#4f97c4", deepwater: "#2e5f87" }; // packed-dirt tan, industrial gray, dark mud brown, shallow-water blue, deep-water dark blue
 // flooring kinds (brush id -> walk boost + paint color). Where blobs overlap,
 // the topmost (last-painted) dab wins, order-dependent exactly like the bake:
 // what you see is what you get. Concrete (1.25x) and Dirt (1.10x) speed units
-// up; Mud (0.80x) and shallow water (0.75x, the slowest of all) slow them
-// down — so water painted over mud reads wet, and a causeway of dirt or mud
-// painted over a pond reads dry.
+// up; Mud (0.80x), Shallow Water (0.75x) and Deep Water (0.50x, the slowest of
+// all) slow them down — so water painted over mud reads wet, and a causeway
+// of dirt or mud painted over a pond reads dry.
 const FLOOR_DEFS = {
   dirt:     { boost: 1.1,  col: FLOOR_COL.dirt },
   concrete: { boost: 1.25, col: FLOOR_COL.concrete },
   mud:      { boost: 0.8,  col: FLOOR_COL.mud },
   water:    { boost: 0.75, col: FLOOR_COL.water },
+  deepwater:{ boost: 0.5,  col: FLOOR_COL.deepwater },
 };
 let floors = []; // {x,y,r,kind,boost}: painted ground — no collision, no selection
 let floorCuts = []; // subtractive carve discs {x,y,r,kind}: the flooring eraser punches holes instead of only deleting whole blobs, so lakes can be sculpted into islands (kind-gated like the blobs; queries and the bake both respect them)
@@ -1893,9 +1929,13 @@ function floorBoostAt(fg, x, y) { // walk-speed multiplier at this point: what y
   const t = topFloorAt(fg, x, y);
   return t ? (t.boost || 1) : 1;
 }
-function inWaterAt(fg, x, y) { // is this point visibly shallow water (topmost covering blob is water — mud painted over a pond reads dry, water painted over mud reads wet)
+function inWaterAt(fg, x, y) { // is this point visibly water of either depth (topmost covering blob is water or deep water — mud painted over a pond reads dry, water painted over mud reads wet)
   const t = topFloorAt(fg, x, y);
-  return !!t && t.kind === "water";
+  return !!t && (t.kind === "water" || t.kind === "deepwater");
+}
+function inDeepWaterAt(fg, x, y) { // is this point visibly DEEP water (topmost covering blob is deep water — units half-submerge and corpses sink here instead of the shallow-water quarter cover)
+  const t = topFloorAt(fg, x, y);
+  return !!t && t.kind === "deepwater";
 }
 function cutsFor(f) { // same-kind carve discs touching this blob (linear scan — a stroke leaves a trail of discs, but containment dedup keeps pile-ups out, and this runs at paint/repaint time, never per frame)
   const out = [];
@@ -1987,7 +2027,8 @@ const FLOOR_TEX = {
   dirt: ["rgba(60,40,20,0.07)", "rgba(255,240,210,0.07)"],
   concrete: ["rgba(20,24,30,0.08)", "rgba(255,255,255,0.08)"],
   mud: ["rgba(12,6,2,0.14)", "rgba(225,185,145,0.10)"],
-  water: ["rgba(10,45,75,0.12)", "rgba(230,245,255,0.16)"]
+  water: ["rgba(10,45,75,0.12)", "rgba(230,245,255,0.16)"],
+  deepwater: ["rgba(4,20,36,0.16)", "rgba(170,210,240,0.13)"]
 };
 function paintFloorTex(g, f, cull) {
   const cols = FLOOR_TEX[f.kind] || FLOOR_TEX.dirt;
@@ -2079,6 +2120,7 @@ function plantFloor(x, y, kind) {
   const f = { x, y, r: pendingFloorR, kind, boost: FLOOR_DEFS[kind].boost };
   floors.push(f);
   let hx0 = Infinity, hy0 = Infinity, hx1 = -Infinity, hy1 = -Infinity; // bounds of healed carves (their holes must refill in NEIGHBOR blobs too, not just under the new dab)
+  const healed = []; // carves this dab heals, kept for pinch take-back (which must un-heal them — otherwise undoing the dab leaves the hole filled)
   for (let i = floorCuts.length - 1; i >= 0; i--) { // painting over a carve heals it: drop same-kind cuts whose center lands inside the new blob
     const c = floorCuts[i];
     if (c.kind !== kind) continue;
@@ -2090,9 +2132,10 @@ function plantFloor(x, y, kind) {
     if (dx * dx + dy * dy < f.r * f.r || ex * ex + ey * ey < c.r * c.r) {
       hx0 = Math.min(hx0, c.x - c.r); hy0 = Math.min(hy0, c.y - c.r);
       hx1 = Math.max(hx1, c.x + c.r); hy1 = Math.max(hy1, c.y + c.r);
-      floorCuts.splice(i, 1);
+      healed.push(c); floorCuts.splice(i, 1);
     }
   }
+  if (healed.length) f._healed = healed;
   bumpFloors(); paintFloorDot(f);
   if (hx1 > hx0) repaintFloorRect(hx0 - 2, hy0 - 2, hx1 + 2, hy1 + 2); // refill the healed holes everywhere they were punched
   return f;
@@ -2263,6 +2306,7 @@ function chipTree(t, x, y, b) {
 // Occupancy (≤3 allies per tree) is tracked in a per-tick map instead of a
 // per-candidate full-unit scan (was trees×units per caller per tick).
 let coverOcc = new Map();
+let unitGrid = null; // step()'s unit grid, reused across ticks via clear() (same empty-map semantics, minus the per-step allocation at 2000 units)
 let treeSet = new Set();
 let treeSetV = -1; // treeSet rebuilds only when the terrain actually changed (or the size drifted — see step)
 let tgtCount = new Map();
@@ -2416,9 +2460,9 @@ function seekCover(u, dx, dy, d, retreat) {
     const rx = t.x - u.x, ry = t.y - u.y;
     const r2 = rx * rx + ry * ry;
     if (r2 > 340 * 340) continue;
-    const du = Math.sqrt(r2);
     const along = rx * ex + ry * ey;
     if (wnd ? along > 120 : along < rearCut) continue;
+    const du = Math.sqrt(r2); // deferred past the cheap gates: rejected cover never pays the sqrt
     const occ = coverOcc.get(t); // allies already on this cover (self excluded)
     const cap = t.kind === "barr" ? 5 : 3; // a wall shelters more gunners than a trunk
     if (((occ && occ[u.faction]) || 0) - (u.coverTree === t ? 1 : 0) >= cap) continue;
@@ -2901,6 +2945,7 @@ function targetScore(u, o, d2) {
   return s;
 }
 function canSee(u, ox, oy) { // line of sight: inside sight range, with no concrete wall or trunk on the ray (canopies never block — units spot movement through leaves)
+  if (!isFinite(u.x + u.y + ox + oy)) return false; // non-finite queries never see (NaN otherwise falls through every range test and reads as visible)
   const def = UNIT_DEFS[u.kind] || UNIT_DEFS.gunner;
   const sight = def.sight || 420;
   const dx = ox - u.x, dy = oy - u.y, d2 = dx * dx + dy * dy;
@@ -2934,6 +2979,7 @@ function acquire(u) {
   // best/second below always compete from the seen set only.
   const teams = mode === "teams";
   const uf = u.faction;
+  const uSni = u.kind === "sniper"; // hoisted: identical for every candidate below
   const sight = ((UNIT_DEFS[u.kind] || UNIT_DEFS.gunner).sight || 420);
   const sight2 = sight * sight;
   let best = null, bs = Infinity, second = null, ss = Infinity;
@@ -2943,10 +2989,10 @@ function acquire(u) {
     if (teams && o.faction === uf) continue;
     const dx = o.x - u.x, dy = o.y - u.y, d2 = dx * dx + dy * dy;
     if (d2 > sight2) continue; // beyond sight: present, not positioned
-    let s = d2 * (0.65 + 0.7 * (o.hp / o.maxHp));
+    let s = d2 * (0.65 + 0.7 * (o.hp / o.maxHp)); // (kept as division: a cached reciprocal differs by 1ulp and flips equidistant-target ties — not worth it)
     if (o.tx === u) s *= 0.7;
     else if (o.kind === "sniper") s *= 0.85;
-    if (u.kind === "sniper") {
+    if (uSni) {
       const ospx = o.vx || 0, ospy = o.vy || 0;
       s *= 0.85 + 0.3 * Math.min(1, Math.sqrt(ospx * ospx + ospy * ospy) / 120);
     }
@@ -3067,10 +3113,10 @@ function muzzle(x, y, a) {
   for (let i = 0; i < 4; i++)
     parts.push({ x, y, vx: Math.cos(a + (Math.random()-0.5)) * (120 + Math.random()*160), vy: Math.sin(a + (Math.random()-0.5)) * (120 + Math.random()*160), life: 0.09, max: 0.09, c: "#ffe27a", s: 2.4 });
 }
-function poof(x, y, c, n) {
+function poof(x, y, c, n, under) {
   for (let i = 0; i < (n || 10); i++) {
     const a = Math.random() * Math.PI * 2, sp = 30 + Math.random() * 130;
-    parts.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 0.4 + Math.random()*0.35, max: 0.7, c, s: 1.5 + Math.random()*2.5 });
+    parts.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: 0.4 + Math.random()*0.35, max: 0.7, c, s: 1.5 + Math.random()*2.5, under: under ? true : undefined });
   }
 }
 // soft-dot sprite cache: round puffs without per-particle arcs. One 48px
@@ -3103,15 +3149,18 @@ function hitSpark(x, y) {
 // water splash: pale droplets arcing up under gravity plus a flat foam pass.
 // Used for shoreline entry/exit, wading wakes (small), and bullet impacts on
 // water (big, pronounced — no crater). Callers cap parts before calling.
+// All of it paints UNDER the tree canopies (under:true, like the wading
+// waterline and the hats resting on the ground): a splash behind a tree reads
+// as behind the wood, never draped over the leaves.
 function splashAt(x, y, big) {
   const b = big || 1, n = Math.round(10 * b);
   const cols = ["#dff1ff", "#bfe2ff", "#9ecfff", "#ffffff"];
   for (let i = 0; i < n; i++) {
     const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.2; // upward fan
     const sp = (60 + Math.random() * 200) * b;
-    parts.push({ x: x + (Math.random()*10-5), y: y + 6, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - 60, g: 520, life: 0.35 + Math.random()*0.3, max: 0.65, c: cols[(Math.random()*cols.length)|0], s: 1.5 + Math.random()*2 });
+    parts.push({ x: x + (Math.random()*10-5), y: y + 6, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - 60, g: 520, life: 0.35 + Math.random()*0.3, max: 0.65, c: cols[(Math.random()*cols.length)|0], s: 1.5 + Math.random()*2, under: true });
   }
-  poof(x, y + 8, "rgba(220,240,255,0.5)", Math.round(3 * b)); // foam settling on the surface
+  poof(x, y + 8, "rgba(220,240,255,0.5)", Math.round(3 * b), true); // foam settling on the surface
 }
 
 function ageParts(dt) { // cosmetic particle aging (shared: the sim calls it per step, the loop calls it while paused)
@@ -3137,19 +3186,21 @@ function step(dt) {
   // (≤5 wall) caps, tgtCount feeds the focus-fire duel-pairing cap.
   // (same-tick joins/leaves keep both maps exact; acquire maintains
   // tgtCount as it reassigns, coverJoin/coverLeave maintain coverOcc)
-  const grid = new Map();
+  // persistent grid (cleared per step — identical contents, no per-tick Map + bucket churn)
+  const grid = unitGrid || (unitGrid = new Map());
+  grid.clear();
   // per-tick snapshots start empty, fill in the pass below, and stay alive
   // for the whole step: joins/leaves (cover) and reassigns (targets) keep
   // them exact as the tick's assignments change.
-  coverOcc = new Map();
-  tgtCount = new Map();
-  spCount = new Map();
+  coverOcc.clear(); // reused across steps (same empty-map semantics, no per-tick allocation)
+  tgtCount.clear();
+  spCount.clear();
   let liveN = 0; const liveF = {}; // live headcount for the presence gate (targetless units search only while enemies exist)
   for (const u of units) {
     if (u.hp > 0 && u.sp) spCount.set(u.sp, (spCount.get(u.sp) || 0) + 1);
     if (u.hp <= 0 || !isFinite(u.x + u.y)) continue;
     liveN++; liveF[u.faction] = (liveF[u.faction] || 0) + 1;
-    const k = ugk(u.x, u.y);
+    const k = (((u.x / UGS) | 0) + 128) * 2048 + (((u.y / UGS) | 0) + 128); // inlined ugk (same key, minus the call)
     let a = grid.get(k); if (!a) { a = []; grid.set(k, a); } a.push(u);
     // same-tick occupancy + target counts (joins/leaves during the tick keep
     // both maps exact; acquire maintains tgtCount as it reassigns below)
@@ -3178,7 +3229,134 @@ function step(dt) {
   // bullet loop later reuses the same cached grid.
   const tgU = treeGridGet();
   const fgU = floorGridGet(); // dirt-speed grid (version-cached, same pattern as the cover grid)
+  // wall-proximity marking for the strafe-bounce below (inverted query: walls
+  // are few, units many — one wall-driven pass marks every nearby unit instead
+  // of every unit scanning 25 cover-grid cells; the per-unit code reads the
+  // identical nearest wall from this cache. Positions are last step's (the
+  // same ones the per-unit scan would see), same ±60 box, same min distance.
+  for (const wseg of wallSegs()) {
+    const wt = wseg.t;
+    const cx0 = (((wt.x - 60) / TGS) | 0), cx1 = (((wt.x + 60) / TGS) | 0);
+    const cy0 = (((wt.y - 60) / TGS) | 0), cy1 = (((wt.y + 60) / TGS) | 0);
+    for (let ix = cx0; ix <= cx1; ix++) for (let iy = cy0; iy <= cy1; iy++) {
+      const wcell = grid.get((ix + 128) * 2048 + (iy + 128)); if (!wcell) continue;
+      for (const o of wcell) {
+        if (Math.abs(o.x - wt.x) > 60 || Math.abs(o.y - wt.y) > 60) continue;
+        const wdd = segDist(o.x, o.y, wseg.x1, wseg.y1, wseg.x2, wseg.y2);
+        if (o._bwT !== stepTick || wdd < o._bwD) { o._bwT = stepTick; o._bw = wt; o._bwD = wdd; }
+      }
+    }
+  }
+  const teamsMode = mode === "teams"; // hoisted: mode never changes mid-step (synchronous), so the per-pair faction gate below skips the global read
   // cover occupancy + focus-fire counts were snapshotted in the grid pass above
+  const gunsStep = (u, def, d, engaged, allyBlock, wantLead, laneBlocked, wallBlocked, trunkBlocked, standSniper) => {
+      // crouch into a steady firing stance when holding
+      // (not advancing/fleeing/rolling/relocating)
+      const wantCrouch = engaged && !allyBlock && !laneBlocked && !(u.kind === "sniper" && standSniper);
+      u.crouch = Math.max(0, Math.min(1, (u.crouch || 0) + ((wantCrouch ? 1 : 0) - (u.crouch || 0)) * Math.min(1, dt * 4)));
+      // fire only from an aimed stance: re-check alignment against the
+      // predicted position, so carry-position guns never discharge.
+      let daFire = wantLead - u.aim;
+      while (daFire > Math.PI) daFire -= Math.PI * 2; while (daFire < -Math.PI) daFire += Math.PI * 2;
+      // wallBlocked/trunkBlocked ride the same gate: no mag-dumping our own
+      // concrete or bark
+      if (u.cool <= 0 && engaged && !allyBlock && !laneBlocked && !wallBlocked && !trunkBlocked && Math.abs(daFire) < 0.22 && u.reloading <= 0) { u.cool = def.interval * (0.85 + Math.random() * 0.3); fire(u, def); }
+      // gun-bash: an empty gun is still a club. Out of ammo with an enemy
+      // hugging us, shove them back for low damage (own cooldown; the reload
+      // keeps ticking underneath). A bash kill ALWAYS takes the headgear.
+      if ((u.ammo || 0) <= 0 && (u.bashCd || 0) <= 0 && u.rollT <= 0) {
+        let victim = null;
+        if (u.tx && u.tx.hp > 0) {
+          const tdef = UNIT_DEFS[u.tx.kind] || def;
+          if (d <= def.radius + tdef.radius + 18) victim = u.tx;
+        }
+        if (!victim) {
+          let bd2 = Infinity;
+          const qx = (u.x / UGS) | 0, qy = (u.y / UGS) | 0;
+          for (let ix = qx - 1; ix <= qx + 1; ix++) for (let iy = qy - 1; iy <= qy + 1; iy++) {
+            const cell = grid.get((ix + 128) * 2048 + (iy + 128)); if (!cell) continue; // inlined ugk3 (same key, minus the call)
+            for (const o of cell) {
+              if (o === u || o.hp <= 0 || (teamsMode && o.faction !== u.faction)) continue; // inlined isEnemy (same test, minus the call)
+              const tdef = UNIT_DEFS[o.kind] || def;
+              const reach = def.radius + tdef.radius + 18;
+              const rx = o.x - u.x, ry = o.y - u.y, d2 = rx * rx + ry * ry;
+              if (d2 < reach * reach && d2 < bd2) { bd2 = d2; victim = o; }
+            }
+          }
+        }
+        if (victim) {
+          const vdx = victim.x - u.x, vdy = victim.y - u.y, vl = Math.max(1, Math.sqrt(vdx * vdx + vdy * vdy));
+          const vnx = vdx / vl, vny = vdy / vl;
+          const BASH_DMG = u.kind === "sniper" ? 8 : 10;
+          u.bashCd = 0.9;
+          u.aim = Math.atan2(vdy, vdx); // face the shove
+          u.recoil = 1; // visible gun-jab through the normal kick visuals
+          u.lungeT = u.lungeDur = 0.3; u.lungeDx = vnx; u.lungeDy = vny; // step-in thrust at the victim (unitFrame leans the body+gun in)
+          for (let k = 0; k < 3; k++) // back-foot spray/dust kicking off the lunge (pale spray when the basher stands in water)
+            parts.push({ x: u.x - vnx * 10 + (Math.random()*8-4), y: u.y + 20, vx: -vnx * 60 + (Math.random()*40-20), vy: -10 - Math.random()*20, life: 0.35, max: 0.35, c: (u.inWater ? "rgba(220,240,255,0.6)" : "rgba(190,170,130,0.55)"), s: 2 });
+          poof((u.x + victim.x) / 2, (u.y + victim.y) / 2, "rgba(220,220,220,0.9)", 4);
+          victim.hp -= BASH_DMG;
+          victim.hitT = simT; // fresh hit: the 10s out-of-combat heal clock restarts
+          noteAttack(victim, u.x, u.y); // shout: the basher is right here — nearby allies overhear it
+          victim.burst = (victim.burst || 0) + BASH_DMG;
+          if ((victim.helmet || victim.hat) && victim.burst >= 100) { victim.burst = 0; loseHelmet(victim); }
+          victim.vx = (victim.vx || 0) + vnx * 130;
+          victim.vy = (victim.vy || 0) + vny * 130;
+          hitSpark(victim.x, victim.y);
+          if (victim.hp <= 0) kill(victim, vnx * 130, vny * 130, { bash: true });
+        }
+      }
+  };
+  const aimStep = (u, def, d, dx, dy, engaged) => { // full-rate muzzle tracking (cheap aim math stays live while the expensive scans stagger); returns the fresh lead for the fire gate
+    const want = Math.atan2(dy, dx);
+    const wounded = u.hp < u.maxHp * (u.fleeHp || 0.35);
+    const pressured = u.reloading > 0 && d < 150;
+    const tof = d / def.bulletSpeed;
+    const leadX = u.tx.x + (u.tx.vx || 0) * tof * 0.9;
+    const leadY = u.tx.y + (u.tx.vy || 0) * tof * 0.9;
+    const wantLead = Math.atan2(leadY - u.y, leadX - u.x);
+    let da = wantLead - u.aim;
+    while (da > Math.PI) da -= Math.PI * 2; while (da < -Math.PI) da += Math.PI * 2;
+        if (engaged) {
+          // aimed shot: track the predicted position, with a small dead zone
+          // so the gun holds still instead of micro-sweeping every frame.
+          const turn = 5 + 2 * (u.skill || 1);
+          if (Math.abs(da) > 0.015) u.aim += da * Math.min(1, dt * turn);
+        } else {
+          // Disengaged carry: point the muzzle along a STABLE intent direction.
+          // Never chase live velocity here — it jitters every frame from
+          // strafing, serpentine weave, jinks and formation shoves, and that
+          // chasing was the endless gun-sweep while fleeing. Advancing guns
+          // face the enemy; rollers point along the roll; guns giving ground
+          // latch their escape heading once per threat (slow drift only), so
+          // the muzzle holds its line instead of waving at every sidestep.
+          let carry = null; // null = hold the muzzle perfectly still this tick
+          if (u.rollT > 0) { /* diving: freeze the gun, body spin is enough motion */ }
+          else if (wounded || pressured) {
+            // giving ground routes by threat, not by distance: latch the escape
+            // heading once per threat (slow drift only), so crossing the range
+            // line mid-rout never flips the muzzle back and forth.
+            const key = u.tx ? u.tx.id : -1;
+            if (u.giveKey !== key) { u.giveKey = key; u.giveA = want + Math.PI; }
+            let dd = (want + Math.PI) - u.giveA;
+            while (dd > Math.PI) dd -= Math.PI * 2; while (dd < -Math.PI) dd += Math.PI * 2;
+            u.giveA += dd * Math.min(1, dt * 0.15); // long routs stay roughly sane
+            carry = u.giveA;
+          }
+          else { carry = want; u.giveKey = null; } // closing (or steady): face the enemy
+          if (carry !== null) {
+          let dc = carry - u.aim;
+          while (dc > Math.PI) dc -= Math.PI * 2; while (dc < -Math.PI) dc += Math.PI * 2;
+          // big flips (turning to run) snap over fast and decisively; small
+          // diffs settle slowly inside a wide dead zone — no muzzle wag.
+          const rate = Math.abs(dc) > 1.0 ? 9 : 1.5;
+          if (Math.abs(dc) > 0.12) u.aim += dc * Math.min(1, dt * rate);
+          }
+        }
+    return wantLead;
+  };
+
+
   for (const u of units) {
     if (u.hp <= 0) continue;
     const def = UNIT_DEFS[u.kind];
@@ -3249,772 +3427,695 @@ function step(dt) {
     // periodic orbit switch; targeted jinks below flip sooner when aimed at
     if (u.strafeT <= 0) { u.strafeDir *= -1; u.strafeT = 1.6 + Math.random() * 2.2; }
     u.boost = Math.max(0, u.boost - dt * 1.2);
+    if (u.tx) { u.jinkCd = Math.max(0, (u.jinkCd || 0) - dt); u.bashCd = Math.max(0, (u.bashCd || 0) - dt); }
+    else if (mode === "ffa" ? liveN > 1 : liveN - (liveF[u.faction] || 0) > 0) u.goalT -= dt;
     // staggered retargets keep 400 units cheap — including the targetless
     // case: a lost target re-acquires immediately (same as before), but a
     // scan that comes up empty backs off to ~1s instead of rescanning
     // every step, so wiped/peaceful fields don't burn O(n^2) doing
     // nothing. Fresh spawns still lock on immediately (their own small
     // initial retarget); big battles stretch the interval (see retScale).
-    if (u.tx && u.tx.hp > 0) {
-      if (u.retarget <= 0) { acquire(u); u.retarget = (0.15 + Math.random() * 0.15) * retScale; }
-    } else if (u.retarget <= 0 || (u.tx && u.tx.hp <= 0)) {
-      acquire(u);
-      u.retarget = u.tx ? (0.15 + Math.random() * 0.15) * retScale : 0.6 + Math.random() * 0.6;
-    }
-    let mvx = 0, mvy = 0;
-    u.moving = false;
-    let limp = 1; // hurt gunners limp (recomputed in the target branch)
-    if (u.tx) {
-      const dx = u.tx.x - u.x, dy = u.tx.y - u.y;
-      const d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-      u.td = d; // live range: cohesion (advancing2) reads this, not a 0.3s-stale acquire value
-      u.seenX = u.tx.x; u.seenY = u.tx.y; // confirmed contact: the search goal if sight breaks
-      u.expX = NaN; u.expY = NaN; u.goalT = 12; // eyes on — no searching
-      // lead the target: aim where it will be when the bullet arrives
-      const tof = d / def.bulletSpeed;
-      const leadX = u.tx.x + (u.tx.vx || 0) * tof * 0.9;
-      const leadY = u.tx.y + (u.tx.vy || 0) * tof * 0.9;
-      const want = Math.atan2(dy, dx);
-      const wantLead = Math.atan2(leadY - u.y, leadX - u.x);
-      let da = wantLead - u.aim;
-      while (da > Math.PI) da -= Math.PI * 2; while (da < -Math.PI) da += Math.PI * 2;
-      // incoming-fire sense: is my target aiming back at me?
-      let underFire = false;
-      if (u.tx.tx === u && u.tx.hp > 0) {
-        let tda = Math.atan2(-dy, -dx) - (u.tx.aim || 0);
-        while (tda > Math.PI) tda -= Math.PI * 2; while (tda < -Math.PI) tda += Math.PI * 2;
-        const trange = (UNIT_DEFS[u.tx.kind] || def).range;
-        if (Math.abs(tda) < 0.2 && d < trange) underFire = true;
+    const dFull = (((u.id + stepTick) & 1) === 0) || !u._dec; // half-rate decide, full-rate act (same precedent as the formation fFull below): intent/flags go 1 tick stale, smoothed by the low-passed steering
+    let mvx = 0, mvy = 0, engaged = false, wantLead = 0, laneBlocked = false, wallBlocked = false, trunkBlocked = false, standSniper = false, limp = 1, dx = 0, dy = 0, d = Infinity;
+    if (dFull) {
+      if (u.tx && u.tx.hp > 0) {
+        if (u.retarget <= 0) { acquire(u); u.retarget = (0.15 + Math.random() * 0.15) * retScale; }
+      } else if (u.retarget <= 0 || (u.tx && u.tx.hp <= 0)) {
+        acquire(u);
+        u.retarget = u.tx ? (0.15 + Math.random() * 0.15) * retScale : 0.6 + Math.random() * 0.6;
       }
-      // tactical jink: flip the orbit when someone draws a bead on us
-      u.jinkCd = Math.max(0, (u.jinkCd || 0) - dt);
-      u.bashCd = Math.max(0, (u.bashCd || 0) - dt);
-      if (underFire && u.jinkCd <= 0 && u.rollT <= 0) {
-        u.strafeDir *= -1; u.strafeT = 1.6 + Math.random() * 2.2; u.jinkCd = 0.7 + Math.random() * 0.8;
-      }
-      const wounded = u.hp < u.maxHp * (u.fleeHp || 0.35);
-      limp = wounded ? 0.8 : 1; // the hurt limp instead of sprinting
-      const pressured = u.reloading > 0 && d < 150; // give ground to finish the reload
-      const advancing = d > def.range;
-      // cornered last stand: nowhere left to run — the enemy is on top of
-      // us, or our escape route runs straight into the map edge — so plant
-      // feet and shoot back instead of routing.
-      const exx = -dx / d, eyy = -dy / d; // escape heading (away from threat)
-      const wallAhead = (u.x + exx * 40 < def.radius) || (u.x + exx * 40 > FW - def.radius) ||
-                        (u.y + eyy * 40 < def.radius) || (u.y + eyy * 40 > FH - def.radius);
-      const nearWall = u.x < 60 || u.y < 60 || u.x > FW - 60 || u.y > FH - 60;
-      // ...but only while the threat is close enough to trade shots with:
-      // cornered against an out-of-range enemy planted forever (nothing to
-      // shoot, and wounded units never take the advance branch), pacing the
-      // corner and eating dodge-rolls instead of escaping along the edge.
-      const cornered = wounded && u.rollT <= 0 && d < def.range && (d < 70 || (nearWall && wallAhead));
-      const fleeing = wounded && !cornered;
-      u.cornered = !!cornered; // read by the dodge logic: last-stands hold instead of rolling
-      // fleeing units run for their lives (no limp while routing out) —
-      // only holding/cornered wounded keep the slow limp below
-      if (fleeing) limp = 1;
-      // field recovery: fleeing wounded slowly patch themselves up while
-      // giving ground (3%/s — meaningless under fire, enough to limp back
-      // into the fight). Left alone for 10s they settle in and patch 3x
-      // faster (9%/s); any fresh hit resets the clock. Clearing the breaking
-      // point returns them to combat automatically, since `wounded` is
-      // recomputed every tick.
-      if (fleeing) {
-        const rate = (simT - (u.hitT ?? -1e9) >= 10) ? 0.09 : 0.03;
-        u.hp = Math.min(u.maxHp, u.hp + u.maxHp * rate * dt);
-      }
-      // committed campers: a sniper tucked into its wood (the cover logic
-      // itself says in-cover) holds the spot instead of marching off it —
-      // rushed (d<=100), hurt, pressured or rolling, which all break camp.
-      let planted = false;
-      if (u.kind === "sniper" && !wounded && u.rollT <= 0 && !pressured && d > 100 && u.coverTree && treeSet.has(u.coverTree)) {
-        const sc0 = seekCover(u, dx, dy, d, true);
-        planted = !!(sc0 && sc0.inCover);
-      }
-      const wantRunEarly = advancing || fleeing || pressured;
-      const engaged = d < def.range && (!wantRunEarly || cornered || planted || (wounded && u.coverHold)) && u.rollT <= 0;
-      if (engaged) {
-        // aimed shot: track the predicted position, with a small dead zone
-        // so the gun holds still instead of micro-sweeping every frame.
-        const turn = 5 + 2 * (u.skill || 1);
-        if (Math.abs(da) > 0.015) u.aim += da * Math.min(1, dt * turn);
-      } else {
-        // Disengaged carry: point the muzzle along a STABLE intent direction.
-        // Never chase live velocity here — it jitters every frame from
-        // strafing, serpentine weave, jinks and formation shoves, and that
-        // chasing was the endless gun-sweep while fleeing. Advancing guns
-        // face the enemy; rollers point along the roll; guns giving ground
-        // latch their escape heading once per threat (slow drift only), so
-        // the muzzle holds its line instead of waving at every sidestep.
-        let carry = null; // null = hold the muzzle perfectly still this tick
-        if (u.rollT > 0) { /* diving: freeze the gun, body spin is enough motion */ }
-        else if (wounded || pressured) {
-          // giving ground routes by threat, not by distance: latch the escape
-          // heading once per threat (slow drift only), so crossing the range
-          // line mid-rout never flips the muzzle back and forth.
-          const key = u.tx ? u.tx.id : -1;
-          if (u.giveKey !== key) { u.giveKey = key; u.giveA = want + Math.PI; }
-          let dd = (want + Math.PI) - u.giveA;
-          while (dd > Math.PI) dd -= Math.PI * 2; while (dd < -Math.PI) dd += Math.PI * 2;
-          u.giveA += dd * Math.min(1, dt * 0.15); // long routs stay roughly sane
-          carry = u.giveA;
+      mvx = 0; mvy = 0;
+      u.moving = false;
+      limp = 1; // hurt gunners limp (recomputed in the target branch)
+      if (u.tx) {
+        dx = u.tx.x - u.x; dy = u.tx.y - u.y;
+        d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        u.td = d; // live range: cohesion (advancing2) reads this, not a 0.3s-stale acquire value
+        u.seenX = u.tx.x; u.seenY = u.tx.y; // confirmed contact: the search goal if sight breaks
+        u.expX = NaN; u.expY = NaN; u.goalT = 12; // eyes on — no searching
+        // lead the target: aim where it will be when the bullet arrives
+        const tof = d / def.bulletSpeed;
+        const leadX = u.tx.x + (u.tx.vx || 0) * tof * 0.9;
+        const leadY = u.tx.y + (u.tx.vy || 0) * tof * 0.9;
+        const want = Math.atan2(dy, dx);
+        wantLead = Math.atan2(leadY - u.y, leadX - u.x);
+        let da = wantLead - u.aim;
+        while (da > Math.PI) da -= Math.PI * 2; while (da < -Math.PI) da += Math.PI * 2;
+        // incoming-fire sense: is my target aiming back at me?
+        let underFire = false;
+        if (u.tx.tx === u && u.tx.hp > 0) {
+          let tda = Math.atan2(-dy, -dx) - (u.tx.aim || 0);
+          while (tda > Math.PI) tda -= Math.PI * 2; while (tda < -Math.PI) tda += Math.PI * 2;
+          const trange = (UNIT_DEFS[u.tx.kind] || def).range;
+          if (Math.abs(tda) < 0.2 && d < trange) underFire = true;
         }
-        else { carry = want; u.giveKey = null; } // closing (or steady): face the enemy
-        if (carry !== null) {
-        let dc = carry - u.aim;
-        while (dc > Math.PI) dc -= Math.PI * 2; while (dc < -Math.PI) dc += Math.PI * 2;
-        // big flips (turning to run) snap over fast and decisively; small
-        // diffs settle slowly inside a wide dead zone — no muzzle wag.
-        const rate = Math.abs(dc) > 1.0 ? 9 : 1.5;
-        if (Math.abs(dc) > 0.12) u.aim += dc * Math.min(1, dt * rate);
+        // tactical jink: flip the orbit when someone draws a bead on us
+        if (underFire && u.jinkCd <= 0 && u.rollT <= 0) {
+          u.strafeDir *= -1; u.strafeT = 1.6 + Math.random() * 2.2; u.jinkCd = 0.7 + Math.random() * 0.8;
         }
-      }
-      const aggr = u.aggr || 1;
-      // snipers hold at max range and never close by positioning (their only
-      // advance is the d>range branch that gets them into range at all)
-      const pref = u.kind === "sniper" ? def.range * 0.98 : (def.hold || 0.7) * def.range * aggr * (wounded ? 1.3 : 1);
-      const minD = def.radius + (UNIT_DEFS[u.tx.kind]?.radius || 13) + 20;
-      const sMag = 0.9 * (1 + u.boost) * (wounded ? 1.4 : 1) * (underFire ? 1.35 : 1);
-      const oxp = -dy / d, oyp = dx / d; // orbit direction
-      // run to close distance, to flee wounded, or to break contact and
-      // finish a pressured reload; combat strafing/kiting upgrades to a run
-      // below (any real move intent with a live target), unless hurt/tucked.
-      const kite = u.kind === "sniper" && d < def.range * 0.5 && !u.coverHold; // planted snipers hold and pick targets
-      const wantRun = fleeing || ((d > def.range || pressured) && !wounded); // fleeing units run; holding wounded limp instead of sprinting
-      u.running = !!wantRun;
-      const weave = Math.sin(simT * 4 + (u.weave || 0));
-      u.coverHold = false; // re-armed only by the holding branch below
-      // snipers stand up to relocate: any branch below that walks them
-      // somewhere sets this, which drops wantCrouch (crouched snipers are
-      // rooted — see the gate past the ally-block). No stuck state: every
-      // real move stands them first, crouch decays, then they walk.
-      let standSniper = false;
-      if (pressured) {
-        // break contact to finish the reload — preferably behind a trunk:
-        // route the retreat through the cover point when one is near
-        const cvp = u.kind === "sniper" ? sniperCover(u, dx, dy, d, true) : (u.cover ? seekCover(u, dx, dy, d) : null);
-        if (cvp && (cvp.go || cvp.inCover)) {
-          if (cvp.inCover) { u.coverHold = true; mvx = cvp.cx * 0.8; mvy = cvp.cy * 0.8; } // planted behind the trunk
-          else {
-            mvx = -dx / d * 0.4 + oxp * u.strafeDir * 0.4 + cvp.cx * 1.6;
-            mvy = -dy / d * 0.4 + oyp * u.strafeDir * 0.4 + cvp.cy * 1.6;
-          }
-        } else {
-          mvx = -dx / d * 1.0 + oxp * u.strafeDir * 0.7;
-          mvy = -dy / d * 1.0 + oyp * u.strafeDir * 0.7;
+        const wounded = u.hp < u.maxHp * (u.fleeHp || 0.35);
+        limp = wounded ? 0.8 : 1; // the hurt limp instead of sprinting
+        const pressured = u.reloading > 0 && d < 150; // give ground to finish the reload
+        const advancing = d > def.range;
+        // cornered last stand: nowhere left to run — the enemy is on top of
+        // us, or our escape route runs straight into the map edge — so plant
+        // feet and shoot back instead of routing.
+        const exx = -dx / d, eyy = -dy / d; // escape heading (away from threat)
+        const wallAhead = (u.x + exx * 40 < def.radius) || (u.x + exx * 40 > FW - def.radius) ||
+                          (u.y + eyy * 40 < def.radius) || (u.y + eyy * 40 > FH - def.radius);
+        const nearWall = u.x < 60 || u.y < 60 || u.x > FW - 60 || u.y > FH - 60;
+        // ...but only while the threat is close enough to trade shots with:
+        // cornered against an out-of-range enemy planted forever (nothing to
+        // shoot, and wounded units never take the advance branch), pacing the
+        // corner and eating dodge-rolls instead of escaping along the edge.
+        const cornered = wounded && u.rollT <= 0 && d < def.range && (d < 70 || (nearWall && wallAhead));
+        const fleeing = wounded && !cornered;
+        u.cornered = !!cornered; // read by the dodge logic: last-stands hold instead of rolling
+        // fleeing units run for their lives (no limp while routing out) —
+        // only holding/cornered wounded keep the slow limp below
+        if (fleeing) limp = 1;
+        // field recovery: fleeing wounded slowly patch themselves up while
+        // giving ground (3%/s — meaningless under fire, enough to limp back
+        // into the fight). Left alone for 10s they settle in and patch 3x
+        // faster (9%/s); any fresh hit resets the clock. Clearing the breaking
+        // point returns them to combat automatically, since `wounded` is
+        // recomputed every tick.
+        if (fleeing) {
+          const rate = (simT - (u.hitT ?? -1e9) >= 10) ? 0.09 : 0.03;
+          u.hp = Math.min(u.maxHp, u.hp + u.maxHp * rate * dt);
         }
-        u.moving = true;
-      } else if (wounded) {
-        // hurt gunners drag themselves to the nearest trunk and shoot back
-        // from behind it instead of routing into the open; with no wood in
-        // reach they fall back (or last-stand when cornered) as before
-        const wc = u.kind === "sniper" ? sniperCover(u, dx, dy, d, true) : (u.cover ? seekCover(u, dx, dy, d) : null);
-        if (wc && (wc.go || wc.inCover)) {
-          if (wc.inCover) { u.coverHold = true; mvx = wc.cx * 0.8; mvy = wc.cy * 0.8; } // planted, shooting back
-          else { mvx = -dx / d * 0.3 + wc.cx * 1.6; mvy = -dy / d * 0.3 + wc.cy * 1.6; } // limp toward the wood
-          u.moving = true;
-        } else if (cornered) {
-          // last stand: back to the wall, plant feet and trade shots —
-          // the aim/fire gates above treat us as engaged while cornered
-          mvx = oxp * u.strafeDir * 0.3; mvy = oyp * u.strafeDir * 0.3;
-          u.moving = true;
-        } else {
-          mvx = -dx / d * 1.2 + oxp * u.strafeDir * 0.8;
-          mvy = -dy / d * 1.2 + oyp * u.strafeDir * 0.8;
-          u.moving = true;
+        // committed campers: a sniper tucked into its wood (the cover logic
+        // itself says in-cover) holds the spot instead of marching off it —
+        // rushed (d<=100), hurt, pressured or rolling, which all break camp.
+        let planted = false;
+        if (u.kind === "sniper" && !wounded && u.rollT <= 0 && !pressured && d > 100 && u.coverTree && treeSet.has(u.coverTree)) {
+          const sc0 = seekCover(u, dx, dy, d, true);
+          planted = !!(sc0 && sc0.inCover);
         }
-      } else if (d > def.range) {
-        // serpentine advance: gunners close on a weaving line so the enemy
-        // can't just lead them; snipers march in steadily
-        const wAmp = u.kind === "sniper" ? 0.15 : 0.55;
-        mvx = dx / d + oxp * weave * wAmp * u.strafeDir;
-        mvy = dy / d + oyp * weave * wAmp * u.strafeDir;
-        // bounding overwatch: drift toward trunks lying roughly on the
-        // advance path, so the push goes tree to tree. Scans every 3rd step
-        // per unit (cached drift in between — the low-passed steering can't
-        // follow faster changes anyway); also box-rejects before the sqrt.
-        if (u.cover && trees.length) {
-          if (((u.id + stepTick) % 3) !== 0 && u._advDone) {
-            mvx += u._advX || 0; mvy += u._advY || 0;
-            if (u._advT && treeSet.has(u._advT)) coverJoin(u, u._advT);
-          } else {
-          const exa = dx / d, eya = dy / d;
-          let bt = null, bs2 = Infinity;
-          for (const t of trees) {
-            const rx = t.x - u.x, ry = t.y - u.y;
-            if (rx > 300 || rx < -300 || ry > 300 || ry < -300) continue;
-            const dq = rx * rx + ry * ry;
-            if (dq > 300 * 300 || dq < 30 * 30) continue;
-            const du = Math.sqrt(dq);
-            const along = rx * exa + ry * eya;
-            if (along < 50) continue;
-            const lat = Math.abs(rx * eya - ry * exa);
-            if (lat > 130) continue;
-            const score = du + lat * 0.5 - (t.kind === "barr" && !barrEndOn(t, u.tx.x, u.tx.y) ? 60 : 0); // drift toward walls on the push, like holders do
-            if (score < bs2) { bs2 = score; bt = t; }
-          }
-          if (bt) {
-            const bdx = bt.x - u.x, bdy = bt.y - u.y;
-            const bl = Math.max(1, Math.sqrt(bdx * bdx + bdy * bdy));
-            u._advX = bdx / bl * 0.9; u._advY = bdy / bl * 0.9; u._advT = bt; u._advDone = true;
-            mvx += u._advX; mvy += u._advY;
-            coverJoin(u, bt);
-          } else { u._advX = 0; u._advY = 0; u._advT = null; u._advDone = true; }
-          } // end else (full advance scan)
-          // (no rear-wood fetch here: out of range the sniper must close the
-          // distance — fetching backward would pin it on its stump while a
-          // mirroring enemy does the same, which is the sniper-duel deadlock.)
-        }
-        // path drift: prefer fast ground on the advance. Every 3rd step per
-        // unit (cached in between, like the tree drift above), score
-        // candidate headings — straight at the enemy plus detours — by
-        // closing rate (progress times floor boost ahead): a concrete strip
-        // a little off-axis beats a straight grass march, while grass in
-        // every direction scores straight highest, so pathless ground never
-        // bends the march. Gated on real distance (120px past range): near
-        // the enemy, units go off-road and chase instead of detouring.
-        if (pathSteer && d > def.range + 120) {
-          if (((u.id + stepTick + 1) % 3) !== 0 && u._pathDone) {
-            mvx += u._pathX || 0; mvy += u._pathY || 0;
-          } else {
-          const exa = dx / d, eya = dy / d;
-          let pBx = exa, pBy = eya, pBest = -Infinity;
-          for (let pai = 0; pai < PATH_ANGLES.length; pai++) {
-            const ang = PATH_ANGLES[pai], ca = Math.cos(ang), sa = Math.sin(ang);
-            const hx = exa * ca - eya * sa, hy = exa * sa + eya * ca;
-            const b1 = floorBoostAt(fgU, u.x + hx * 120, u.y + hy * 120);
-            const b2 = floorBoostAt(fgU, u.x + hx * 240, u.y + hy * 240);
-            const rate = ca * (b1 * 0.65 + b2 * 0.35);
-            if (rate > pBest) { pBest = rate; pBx = hx; pBy = hy; }
-          }
-          u._pathX = (pBx - exa) * 1.0; u._pathY = (pBy - eya) * 1.0; u._pathDone = true;
-          mvx += u._pathX; mvy += u._pathY;
-          } // end else (full path scan)
-        } else { u._pathX = 0; u._pathY = 0; u._pathDone = true; }
-        // out of range there is nothing to hold for: march. (The planted sit
-        // lives in the in-range branches — sitting here while a mirroring
-        // threat sits too is the sniper-duel deadlock: nobody ever arrives.)
-        u.moving = true;
-      } else if (kite) {
-        // snipers refuse the clinch: back away fast, gun stays on target —
-        // preferably toward a trunk, relocating into cover
-        if (u.kind === "sniper") standSniper = true; // relocation happens standing
-        const cvk = u.kind === "sniper" ? sniperCover(u, dx, dy, d, true) : (u.cover ? seekCover(u, dx, dy, d) : null);
-        if (cvk && cvk.go) {
-          mvx = -dx / d * 0.5 + oxp * u.strafeDir * 0.4 + cvk.cx * 1.3;
-          mvy = -dy / d * 0.5 + oyp * u.strafeDir * 0.4 + cvk.cy * 1.3;
-        } else {
-          mvx = -dx / d * 1.1 + oxp * u.strafeDir * 0.7;
-          mvy = -dy / d * 1.1 + oyp * u.strafeDir * 0.7;
-        }
-        // backed against the map edge: slide along it instead of grinding in
-        if (u.kind === "sniper") {
-          if ((u.x < 50 && mvx < 0) || (u.x > FW - 50 && mvx > 0)) mvx = 0;
-          if ((u.y < 50 && mvy < 0) || (u.y > FH - 50 && mvy > 0)) mvy = 0;
-        }
-        u.moving = true;
-      }
-      else if (d < minD) {
-        mvx = -dx / d + oxp * u.strafeDir * 0.6; mvy = -dy / d + oyp * u.strafeDir * 0.6;
-        // snipers fall back INTO cover, not just away (see hold branch)
-        if (u.kind === "sniper") {
-          standSniper = true; // backing off happens standing
-          const cvM = sniperCover(u, dx, dy, d, true);
-          if (cvM) {
-            if (cvM.go) { mvx += cvM.cx * 1.4; mvy += cvM.cy * 1.4; }
-            if (cvM.inCover) { u.coverHold = true; mvx = cvM.cx * 0.8; mvy = cvM.cy * 0.8; }
-          }
-          if ((u.x < 50 && mvx < 0) || (u.x > FW - 50 && mvx > 0)) mvx = 0;
-          if ((u.y < 50 && mvy < 0) || (u.y > FH - 50 && mvy > 0)) mvy = 0;
-        }
-        u.moving = true;
-      }
-      else if (d > pref + 14) { mvx = dx / d * 0.85 + oxp * u.strafeDir * 0.4; mvy = dy / d * 0.85 + oyp * u.strafeDir * 0.4; u.moving = true; if (u.kind === "sniper") standSniper = true; }
-      else if (d < pref - 14) {
-        // crouch shots first: a loaded sniper holding a firing solution
-        // plants and shoots instead of backing off — the hold below keeps
-        // the range honest once the shot is away, and blocked lanes still
-        // stand us up to relocate.
-        const snipePlant2 = u.kind === "sniper" && engaged && !u.allyBlock;
-        if (snipePlant2) { mvx = 0; mvy = 0; u.moving = false; }
-        else {
-        mvx = -dx / d * 0.7 + oxp * u.strafeDir * 0.5; mvy = -dy / d * 0.7 + oyp * u.strafeDir * 0.5;
-        // snipers open range toward cover and plant when shielded, instead
-        // of backing blindly into walls (see hold branch)
-        if (u.kind === "sniper") {
-          standSniper = true; // opening range happens standing
-          const cvO = sniperCover(u, dx, dy, d, true);
-          if (cvO) {
-            if (cvO.go) { mvx += cvO.cx * 1.4; mvy += cvO.cy * 1.4; }
-            if (cvO.inCover) { u.coverHold = true; mvx = cvO.cx * 0.8; mvy = cvO.cy * 0.8; }
-          }
-          if ((u.x < 50 && mvx < 0) || (u.x > FW - 50 && mvx > 0)) mvx = 0;
-          if ((u.y < 50 && mvy < 0) || (u.y > FH - 50 && mvy > 0)) mvy = 0;
-        }
-        if (!snipePlant2) u.moving = true;
-        }
-      }
-      else {
-        mvx = oxp * u.strafeDir * sMag + dx / d * (d - pref) * 0.05;
-        mvy = oyp * u.strafeDir * sMag + dy / d * (d - pref) * 0.05;
-        // snipers sit still to aim (repositioning happens in other branches);
-        // stationary + crouched is what unlocks their 100% precision
-        if (u.kind === "sniper") { mvx *= 0.1; mvy *= 0.1; }
-        u.moving = true;
-        // cover-seekers sidle behind a nearby trunk and hunker (still firing);
-        // holding snipers with only rear wood back into it and camp instead
-        // of strafing in the open (far rear wood is ignored — see camp cap).
-        let cv = u.kind === "sniper" ? sniperCover(u, dx, dy, d, false) : seekCover(u, dx, dy, d);
-        if (!cv && u.kind === "sniper") cv = sniperCampTree(u, dx, dy, d);
-        if (cv) {
-          // crouch shots first: a sniper holding a good firing solution
-          // plants and takes the 100%-precision shot instead of sidling to
-          // the trunk. Relocation still happens whenever it must — blocked
-          // lanes stand us up below, pressure/range/kite branches never
-          // reach this gate.
-          const snipePlant = u.kind === "sniper" && engaged && !u.allyBlock;
-          if (cv.go || cv.push) {
-            if (!snipePlant) {
-              mvx += cv.cx * 1.4; mvy += cv.cy * 1.4;
-              if (u.kind === "sniper") standSniper = true; // sidling to the trunk happens standing
-              if (cv.vd < 70) { mvx *= 0.5; mvy *= 0.5; } // close in: settle toward the trunk
-            } else u.moving = false; // holding the shot: stay still so the crouch builds
-          }
-          if (cv.inCover) { u.coverHold = true; mvx = cv.cx * 0.8; mvy = cv.cy * 0.8; } // planted: home onto the spot
-        }
-      }
-      // retreat-blocked slide: giving ground straight into concrete (or the
-      // map edge) grinds in place — the away-push dies on the obstruction
-      // while the flipping orbit averages to nothing, so the unit sits
-      // forever instead of sidestepping free (backed-into-a-corner is the
-      // same trap with the edge as the wall). Detect the block and commit
-      // to sliding along it — stable per blocker, like the firing-lane
-      // slide above — until the way out opens past the wall's end or along
-      // the edge. Deliberate plants (cornered) and rolls/vaults keep their
-      // own paths; holders are untouched (their homing never pushes away).
-      // Engagement needs a genuine grind (4 ticks with under 6px of real
-      // displacement — the clamp/push-out cancels position, not velocity,
-      // so speed alone can't tell): normal strafing past walls covers
-      // ~15px in that time and never triggers, so there is no skating and
-      // no accuracy cost. (retreatSlide=false disables it for A/B testing.)
-      if (retreatSlide && !cornered && u.rollT <= 0 && !u.vaultT && (mvx * exx + mvy * eyy) > 0.3) {
-        let blk = null, blx = 0, bly = 0;
-        const prx = u.x + exx * 36, pry = u.y + eyy * 36;
-        if (prx < def.radius || prx > FW - def.radius || pry < def.radius || pry > FH - def.radius) {
-          blk = "edge";
-          // slide toward the field center, projected on the escape tangent,
-          // so corners escape along an edge instead of grinding into one
-          const tx0 = -eyy, ty0 = exx;
-          const sgn = (tx0 * (FW / 2 - u.x) + ty0 * (FH / 2 - u.y)) >= 0 ? 1 : -1;
-          blx = tx0 * sgn; bly = ty0 * sgn;
-        } else {
-          let bw = null, bd = Infinity;
-          // 5x5 cover-grid query (every wall centered within ±84px reaches
-          // the queried cells): same min-distance winner as the old scan.
-          const rcx = ((u.x / TGS) | 0), rcy = ((u.y / TGS) | 0);
-          for (let rx = rcx - 2; rx <= rcx + 2; rx++) for (let ry = rcy - 2; ry <= rcy + 2; ry++) {
-            const rcell = tgU.get((rx + 128) * 2048 + (ry + 128));
-            if (!rcell) continue;
-            for (const rw of rcell) {
-            // broadphase on the wall center first (probe reaches 36px, wall
-            // half-length 24, trigger 23 — nothing past 84px can qualify),
-            // then one exact segment test per nearby wall
-            if (rw.kind !== "barr") continue;
-            const crx = rw.x - u.x, cry = rw.y - u.y;
-            if (crx > 84 || crx < -84 || cry > 84 || cry < -84) continue;
-            const rs = barrSeg(rw);
-            const dd = segSegDist(u.x, u.y, prx, pry, rs[0], rs[1], rs[2], rs[3]);
-            if (dd < bd) { bd = dd; bw = rw; }
+        const wantRunEarly = advancing || fleeing || pressured;
+        engaged = d < def.range && (!wantRunEarly || cornered || planted || (wounded && u.coverHold)) && u.rollT <= 0;
+        aimStep(u, def, d, dx, dy, engaged);
+        const aggr = u.aggr || 1;
+        // snipers hold at max range and never close by positioning (their only
+        // advance is the d>range branch that gets them into range at all)
+        const pref = u.kind === "sniper" ? def.range * 0.98 : (def.hold || 0.7) * def.range * aggr * (wounded ? 1.3 : 1);
+        const minD = def.radius + (UNIT_DEFS[u.tx.kind]?.radius || 13) + 20;
+        const sMag = 0.9 * (1 + u.boost) * (wounded ? 1.4 : 1) * (underFire ? 1.35 : 1);
+        const oxp = -dy / d, oyp = dx / d; // orbit direction
+        // run to close distance, to flee wounded, or to break contact and
+        // finish a pressured reload; combat strafing/kiting upgrades to a run
+        // below (any real move intent with a live target), unless hurt/tucked.
+        const kite = u.kind === "sniper" && d < def.range * 0.5 && !u.coverHold; // planted snipers hold and pick targets
+        const wantRun = fleeing || ((d > def.range || pressured) && !wounded); // fleeing units run; holding wounded limp instead of sprinting
+        u.running = !!wantRun;
+        const weave = Math.sin(simT * 4 + (u.weave || 0));
+        u.coverHold = false; // re-armed only by the holding branch below
+        // snipers stand up to relocate: any branch below that walks them
+        // somewhere sets this, which drops wantCrouch (crouched snipers are
+        // rooted — see the gate past the ally-block). No stuck state: every
+        // real move stands them first, crouch decays, then they walk.
+        standSniper = false;
+        if (pressured) {
+          // break contact to finish the reload — preferably behind a trunk:
+          // route the retreat through the cover point when one is near
+          const cvp = u.kind === "sniper" ? sniperCover(u, dx, dy, d, true) : (u.cover ? seekCover(u, dx, dy, d) : null);
+          if (cvp && (cvp.go || cvp.inCover)) {
+            if (cvp.inCover) { u.coverHold = true; mvx = cvp.cx * 0.8; mvy = cvp.cy * 0.8; } // planted behind the trunk
+            else {
+              mvx = -dx / d * 0.4 + oxp * u.strafeDir * 0.4 + cvp.cx * 1.6;
+              mvy = -dy / d * 0.4 + oyp * u.strafeDir * 0.4 + cvp.cy * 1.6;
             }
+          } else {
+            mvx = -dx / d * 1.0 + oxp * u.strafeDir * 0.7;
+            mvy = -dy / d * 1.0 + oyp * u.strafeDir * 0.7;
           }
-          if (bw && bd < BARR_HW + def.radius + 2) {
-            blk = bw;
-            // committed slide to the blocker's nearer end (stable across
-            // jinks — the flip-flop is what stranded advancers before)
-            const bal = (u.x - bw.x) * bw.sax + (u.y - bw.y) * bw.say;
-            const sgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
-            blx = bw.sax * sgn; bly = bw.say * sgn;
-          }
-        }
-        if (blk) {
-          // commit per blocker (with a 1s sign re-pick so an edge-corner
-          // can't pin a stale sign forever): flips stop undoing the escape.
-          // A new blocker engages only after its own 3-tick grind — units
-          // that are moving fine keep their branch steering.
-          // NOTE: key on the live wall object itself (stable across steps —
-          // walls never move), so an index key can't go stale on edit.
-          const key = blk === "edge" ? "e" : blk;
-          if (u.escKey !== key) {
-            if (u.escStuckX === undefined) { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; }
-            else { const esdx = u.x - u.escStuckX, esdy = u.y - u.escStuckY; if (esdx * esdx + esdy * esdy < 36) u.escStuck++; else { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; } }
-            if ((u.escStuck || 0) >= 4) { u.escKey = key; u.escT = 1.0; u.escSx = blx; u.escSy = bly; u.escStuck = 0; u.escStuckX = undefined; }
-          }
-          if (u.escKey === key) {
-            u.escT -= dt;
-            if (u.escT <= 0) { u.escT = 1.0; u.escSx = blx; u.escSy = bly; }
-            mvx = u.escSx * 1.2 + exx * 0.15; mvy = u.escSy * 1.2 + eyy * 0.15;
+          u.moving = true;
+        } else if (wounded) {
+          // hurt gunners drag themselves to the nearest trunk and shoot back
+          // from behind it instead of routing into the open; with no wood in
+          // reach they fall back (or last-stand when cornered) as before
+          const wc = u.kind === "sniper" ? sniperCover(u, dx, dy, d, true) : (u.cover ? seekCover(u, dx, dy, d) : null);
+          if (wc && (wc.go || wc.inCover)) {
+            if (wc.inCover) { u.coverHold = true; mvx = wc.cx * 0.8; mvy = wc.cy * 0.8; } // planted, shooting back
+            else { mvx = -dx / d * 0.3 + wc.cx * 1.6; mvy = -dy / d * 0.3 + wc.cy * 1.6; } // limp toward the wood
+            u.moving = true;
+          } else if (cornered) {
+            // last stand: back to the wall, plant feet and trade shots —
+            // the aim/fire gates above treat us as engaged while cornered
+            mvx = oxp * u.strafeDir * 0.3; mvy = oyp * u.strafeDir * 0.3;
+            u.moving = true;
+          } else {
+            mvx = -dx / d * 1.2 + oxp * u.strafeDir * 0.8;
+            mvy = -dy / d * 1.2 + oyp * u.strafeDir * 0.8;
             u.moving = true;
           }
-        } else { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
-      } else if ((mvx * exx + mvy * eyy) <= 0.1) { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
-      // trunk-grind slide: pushing straight into a trunk face grinds forever —
-      // the weave and strafe flips are symmetric, so net lateral motion is
-      // zero while the pushout eats the radial part (measured 30s+ on a lone
-      // trunk, two approach angles never clearing at all). Same 4-tick/6px
-      // grind detector and commit shape as the wall/edge slide above: slide
-      // along the trunk tangent (stable personality side) with a nudge along
-      // the unit's own intent, so it rounds the wood instead of jittering on
-      // its face. The grind test is intent-based (commanded velocity into the
-      // trunk), not enemy-axis-based: strafe-orbit, relocation and
-      // cover-approach grinds are all perpendicular to the enemy axis and the
-      // old advance/retreat-only gate sat on the bark forever.
-      // Active wall/edge slides keep priority (their key wins); tucked
-      // holders never slide off their tree, nor do cornered last-stands,
-      // rolls or vaults. Contact is re-checked live (not trusted stale), so
-      // a freed unit resumes branch steering at once.
-      if (retreatSlide && !cornered && !u.coverHold && u.rollT <= 0 && !u.vaultT &&
-          (u.escKey === null || u.escKey === undefined || (u.trunkTouch && u.escKey === u.trunkTouch))) {
-        let tk = null, tkx = 0, tky = 0, tgx = 0, tgy = 0;
-        {
-          const tt = u.trunkTouch;
-          if (tt && treeSet.has(tt)) {
-            const qdx = u.x - tt.x, qdy = u.y - (tt.y + 15);
-            const qd2 = qdx * qdx + qdy * qdy, qr = TRUNK_R + def.radius * 0.7 + 6;
-            if (qd2 < qr * qr && qd2 > 0.01) {
-              const qd = Math.sqrt(qd2), mv = Math.sqrt(mvx * mvx + mvy * mvy);
-              // an engaged slide stays engaged while contact persists (its own
-              // steering is tangential, so the into-face test below would read
-              // clean the moment it starts working — that is success, not freedom)
-              if (u.escKey === tt || (mv > 0.3 && -(mvx * qdx + mvy * qdy) / (qd * mv) > 0.3)) {
-                const sgn = (u.coverSide || 1);
-                tkx = -qdy / qd * sgn; tky = qdx / qd * sgn;
-                tgx = mv > 0.01 ? mvx / mv : 0; tgy = mv > 0.01 ? mvy / mv : 0;
-                tk = tt;
+        } else if (d > def.range) {
+          // serpentine advance: gunners close on a weaving line so the enemy
+          // can't just lead them; snipers march in steadily
+          const wAmp = u.kind === "sniper" ? 0.15 : 0.55;
+          mvx = dx / d + oxp * weave * wAmp * u.strafeDir;
+          mvy = dy / d + oyp * weave * wAmp * u.strafeDir;
+          // bounding overwatch: drift toward trunks lying roughly on the
+          // advance path, so the push goes tree to tree. Scans every 3rd step
+          // per unit (cached drift in between — the low-passed steering can't
+          // follow faster changes anyway); also box-rejects before the sqrt.
+          if (u.cover && trees.length) {
+            if (((u.id + stepTick) % 3) !== 0 && u._advDone) {
+              mvx += u._advX || 0; mvy += u._advY || 0;
+              if (u._advT && treeSet.has(u._advT)) coverJoin(u, u._advT);
+            } else {
+            const exa = dx / d, eya = dy / d;
+            let bt = null, bs2 = Infinity;
+            for (const t of trees) {
+              const rx = t.x - u.x, ry = t.y - u.y;
+              if (rx > 300 || rx < -300 || ry > 300 || ry < -300) continue;
+              const dq = rx * rx + ry * ry;
+              if (dq > 300 * 300 || dq < 30 * 30) continue;
+              const du = Math.sqrt(dq);
+              const along = rx * exa + ry * eya;
+              if (along < 50) continue;
+              const lat = Math.abs(rx * eya - ry * exa);
+              if (lat > 130) continue;
+              const score = du + lat * 0.5 - (t.kind === "barr" && !barrEndOn(t, u.tx.x, u.tx.y) ? 60 : 0); // drift toward walls on the push, like holders do
+              if (score < bs2) { bs2 = score; bt = t; }
+            }
+            if (bt) {
+              const bdx = bt.x - u.x, bdy = bt.y - u.y;
+              const bl = Math.max(1, Math.sqrt(bdx * bdx + bdy * bdy));
+              u._advX = bdx / bl * 0.9; u._advY = bdy / bl * 0.9; u._advT = bt; u._advDone = true;
+              mvx += u._advX; mvy += u._advY;
+              coverJoin(u, bt);
+            } else { u._advX = 0; u._advY = 0; u._advT = null; u._advDone = true; }
+            } // end else (full advance scan)
+            // (no rear-wood fetch here: out of range the sniper must close the
+            // distance — fetching backward would pin it on its stump while a
+            // mirroring enemy does the same, which is the sniper-duel deadlock.)
+          }
+          // path drift: prefer fast ground on the advance. Every 3rd step per
+          // unit (cached in between, like the tree drift above), score
+          // candidate headings — straight at the enemy plus detours — by
+          // closing rate (progress times floor boost ahead): a concrete strip
+          // a little off-axis beats a straight grass march, while grass in
+          // every direction scores straight highest, so pathless ground never
+          // bends the march. Gated on real distance (120px past range): near
+          // the enemy, units go off-road and chase instead of detouring.
+          if (pathSteer && d > def.range + 120) {
+            if (((u.id + stepTick + 1) % 3) !== 0 && u._pathDone) {
+              mvx += u._pathX || 0; mvy += u._pathY || 0;
+            } else {
+            const exa = dx / d, eya = dy / d;
+            let pBx = exa, pBy = eya, pBest = -Infinity;
+            for (let pai = 0; pai < PATH_ANGLES.length; pai++) {
+              const ang = PATH_ANGLES[pai], ca = Math.cos(ang), sa = Math.sin(ang);
+              const hx = exa * ca - eya * sa, hy = exa * sa + eya * ca;
+              const b1 = floorBoostAt(fgU, u.x + hx * 120, u.y + hy * 120);
+              const b2 = floorBoostAt(fgU, u.x + hx * 240, u.y + hy * 240);
+              const rate = ca * (b1 * 0.65 + b2 * 0.35);
+              if (rate > pBest) { pBest = rate; pBx = hx; pBy = hy; }
+            }
+            u._pathX = (pBx - exa) * 1.0; u._pathY = (pBy - eya) * 1.0; u._pathDone = true;
+            mvx += u._pathX; mvy += u._pathY;
+            } // end else (full path scan)
+          } else { u._pathX = 0; u._pathY = 0; u._pathDone = true; }
+          // out of range there is nothing to hold for: march. (The planted sit
+          // lives in the in-range branches — sitting here while a mirroring
+          // threat sits too is the sniper-duel deadlock: nobody ever arrives.)
+          u.moving = true;
+        } else if (kite) {
+          // snipers refuse the clinch: back away fast, gun stays on target —
+          // preferably toward a trunk, relocating into cover
+          if (u.kind === "sniper") standSniper = true; // relocation happens standing
+          const cvk = u.kind === "sniper" ? sniperCover(u, dx, dy, d, true) : (u.cover ? seekCover(u, dx, dy, d) : null);
+          if (cvk && cvk.go) {
+            mvx = -dx / d * 0.5 + oxp * u.strafeDir * 0.4 + cvk.cx * 1.3;
+            mvy = -dy / d * 0.5 + oyp * u.strafeDir * 0.4 + cvk.cy * 1.3;
+          } else {
+            mvx = -dx / d * 1.1 + oxp * u.strafeDir * 0.7;
+            mvy = -dy / d * 1.1 + oyp * u.strafeDir * 0.7;
+          }
+          // backed against the map edge: slide along it instead of grinding in
+          if (u.kind === "sniper") {
+            if ((u.x < 50 && mvx < 0) || (u.x > FW - 50 && mvx > 0)) mvx = 0;
+            if ((u.y < 50 && mvy < 0) || (u.y > FH - 50 && mvy > 0)) mvy = 0;
+          }
+          u.moving = true;
+        }
+        else if (d < minD) {
+          mvx = -dx / d + oxp * u.strafeDir * 0.6; mvy = -dy / d + oyp * u.strafeDir * 0.6;
+          // snipers fall back INTO cover, not just away (see hold branch)
+          if (u.kind === "sniper") {
+            standSniper = true; // backing off happens standing
+            const cvM = sniperCover(u, dx, dy, d, true);
+            if (cvM) {
+              if (cvM.go) { mvx += cvM.cx * 1.4; mvy += cvM.cy * 1.4; }
+              if (cvM.inCover) { u.coverHold = true; mvx = cvM.cx * 0.8; mvy = cvM.cy * 0.8; }
+            }
+            if ((u.x < 50 && mvx < 0) || (u.x > FW - 50 && mvx > 0)) mvx = 0;
+            if ((u.y < 50 && mvy < 0) || (u.y > FH - 50 && mvy > 0)) mvy = 0;
+          }
+          u.moving = true;
+        }
+        else if (d > pref + 14) { mvx = dx / d * 0.85 + oxp * u.strafeDir * 0.4; mvy = dy / d * 0.85 + oyp * u.strafeDir * 0.4; u.moving = true; if (u.kind === "sniper") standSniper = true; }
+        else if (d < pref - 14) {
+          // crouch shots first: a loaded sniper holding a firing solution
+          // plants and shoots instead of backing off — the hold below keeps
+          // the range honest once the shot is away, and blocked lanes still
+          // stand us up to relocate.
+          const snipePlant2 = u.kind === "sniper" && engaged && !u.allyBlock;
+          if (snipePlant2) { mvx = 0; mvy = 0; u.moving = false; }
+          else {
+          mvx = -dx / d * 0.7 + oxp * u.strafeDir * 0.5; mvy = -dy / d * 0.7 + oyp * u.strafeDir * 0.5;
+          // snipers open range toward cover and plant when shielded, instead
+          // of backing blindly into walls (see hold branch)
+          if (u.kind === "sniper") {
+            standSniper = true; // opening range happens standing
+            const cvO = sniperCover(u, dx, dy, d, true);
+            if (cvO) {
+              if (cvO.go) { mvx += cvO.cx * 1.4; mvy += cvO.cy * 1.4; }
+              if (cvO.inCover) { u.coverHold = true; mvx = cvO.cx * 0.8; mvy = cvO.cy * 0.8; }
+            }
+            if ((u.x < 50 && mvx < 0) || (u.x > FW - 50 && mvx > 0)) mvx = 0;
+            if ((u.y < 50 && mvy < 0) || (u.y > FH - 50 && mvy > 0)) mvy = 0;
+          }
+          if (!snipePlant2) u.moving = true;
+          }
+        }
+        else {
+          mvx = oxp * u.strafeDir * sMag + dx / d * (d - pref) * 0.05;
+          mvy = oyp * u.strafeDir * sMag + dy / d * (d - pref) * 0.05;
+          // snipers sit still to aim (repositioning happens in other branches);
+          // stationary + crouched is what unlocks their 100% precision
+          if (u.kind === "sniper") { mvx *= 0.1; mvy *= 0.1; }
+          u.moving = true;
+          // cover-seekers sidle behind a nearby trunk and hunker (still firing);
+          // holding snipers with only rear wood back into it and camp instead
+          // of strafing in the open (far rear wood is ignored — see camp cap).
+          let cv = u.kind === "sniper" ? sniperCover(u, dx, dy, d, false) : seekCover(u, dx, dy, d);
+          if (!cv && u.kind === "sniper") cv = sniperCampTree(u, dx, dy, d);
+          if (cv) {
+            // crouch shots first: a sniper holding a good firing solution
+            // plants and takes the 100%-precision shot instead of sidling to
+            // the trunk. Relocation still happens whenever it must — blocked
+            // lanes stand us up below, pressure/range/kite branches never
+            // reach this gate.
+            const snipePlant = u.kind === "sniper" && engaged && !u.allyBlock;
+            if (cv.go || cv.push) {
+              if (!snipePlant) {
+                mvx += cv.cx * 1.4; mvy += cv.cy * 1.4;
+                if (u.kind === "sniper") standSniper = true; // sidling to the trunk happens standing
+                if (cv.vd < 70) { mvx *= 0.5; mvy *= 0.5; } // close in: settle toward the trunk
+              } else u.moving = false; // holding the shot: stay still so the crouch builds
+            }
+            if (cv.inCover) { u.coverHold = true; mvx = cv.cx * 0.8; mvy = cv.cy * 0.8; } // planted: home onto the spot
+          }
+        }
+        // retreat-blocked slide: giving ground straight into concrete (or the
+        // map edge) grinds in place — the away-push dies on the obstruction
+        // while the flipping orbit averages to nothing, so the unit sits
+        // forever instead of sidestepping free (backed-into-a-corner is the
+        // same trap with the edge as the wall). Detect the block and commit
+        // to sliding along it — stable per blocker, like the firing-lane
+        // slide above — until the way out opens past the wall's end or along
+        // the edge. Deliberate plants (cornered) and rolls/vaults keep their
+        // own paths; holders are untouched (their homing never pushes away).
+        // Engagement needs a genuine grind (4 ticks with under 6px of real
+        // displacement — the clamp/push-out cancels position, not velocity,
+        // so speed alone can't tell): normal strafing past walls covers
+        // ~15px in that time and never triggers, so there is no skating and
+        // no accuracy cost. (retreatSlide=false disables it for A/B testing.)
+        if (retreatSlide && !cornered && u.rollT <= 0 && !u.vaultT && (mvx * exx + mvy * eyy) > 0.3) {
+          let blk = null, blx = 0, bly = 0;
+          const prx = u.x + exx * 36, pry = u.y + eyy * 36;
+          if (prx < def.radius || prx > FW - def.radius || pry < def.radius || pry > FH - def.radius) {
+            blk = "edge";
+            // slide toward the field center, projected on the escape tangent,
+            // so corners escape along an edge instead of grinding into one
+            const tx0 = -eyy, ty0 = exx;
+            const sgn = (tx0 * (FW / 2 - u.x) + ty0 * (FH / 2 - u.y)) >= 0 ? 1 : -1;
+            blx = tx0 * sgn; bly = ty0 * sgn;
+          } else {
+            let bw = null, bd = Infinity;
+            // 5x5 cover-grid query (every wall centered within ±84px reaches
+            // the queried cells): same min-distance winner as the old scan.
+            const rcx = ((u.x / TGS) | 0), rcy = ((u.y / TGS) | 0);
+            for (let rx = rcx - 2; rx <= rcx + 2; rx++) for (let ry = rcy - 2; ry <= rcy + 2; ry++) {
+              const rcell = tgU.get((rx + 128) * 2048 + (ry + 128));
+              if (!rcell) continue;
+              for (const rw of rcell) {
+              // broadphase on the wall center first (probe reaches 36px, wall
+              // half-length 24, trigger 23 — nothing past 84px can qualify),
+              // then one exact segment test per nearby wall
+              if (rw.kind !== "barr") continue;
+              const crx = rw.x - u.x, cry = rw.y - u.y;
+              if (crx > 84 || crx < -84 || cry > 84 || cry < -84) continue;
+              const rs = barrSeg(rw);
+              const dd = segSegDist(u.x, u.y, prx, pry, rs[0], rs[1], rs[2], rs[3]);
+              if (dd < bd) { bd = dd; bw = rw; }
+              }
+            }
+            if (bw && bd < BARR_HW + def.radius + 2) {
+              blk = bw;
+              // committed slide to the blocker's nearer end (stable across
+              // jinks — the flip-flop is what stranded advancers before)
+              const bal = (u.x - bw.x) * bw.sax + (u.y - bw.y) * bw.say;
+              const sgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
+              blx = bw.sax * sgn; bly = bw.say * sgn;
+            }
+          }
+          if (blk) {
+            // commit per blocker (with a 1s sign re-pick so an edge-corner
+            // can't pin a stale sign forever): flips stop undoing the escape.
+            // A new blocker engages only after its own 3-tick grind — units
+            // that are moving fine keep their branch steering.
+            // NOTE: key on the live wall object itself (stable across steps —
+            // walls never move), so an index key can't go stale on edit.
+            const key = blk === "edge" ? "e" : blk;
+            if (u.escKey !== key) {
+              if (u.escStuckX === undefined) { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; }
+              else { const esdx = u.x - u.escStuckX, esdy = u.y - u.escStuckY; if (esdx * esdx + esdy * esdy < 36) u.escStuck++; else { u.escStuckX = u.x; u.escStuckY = u.y; u.escStuck = 1; } }
+              if ((u.escStuck || 0) >= 4) { u.escKey = key; u.escT = 1.0; u.escSx = blx; u.escSy = bly; u.escStuck = 0; u.escStuckX = undefined; }
+            }
+            if (u.escKey === key) {
+              u.escT -= dt;
+              if (u.escT <= 0) { u.escT = 1.0; u.escSx = blx; u.escSy = bly; }
+              mvx = u.escSx * 1.2 + exx * 0.15; mvy = u.escSy * 1.2 + eyy * 0.15;
+              u.moving = true;
+            }
+          } else { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
+        } else if ((mvx * exx + mvy * eyy) <= 0.1) { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
+        // trunk-grind slide: pushing straight into a trunk face grinds forever —
+        // the weave and strafe flips are symmetric, so net lateral motion is
+        // zero while the pushout eats the radial part (measured 30s+ on a lone
+        // trunk, two approach angles never clearing at all). Same 4-tick/6px
+        // grind detector and commit shape as the wall/edge slide above: slide
+        // along the trunk tangent (stable personality side) with a nudge along
+        // the unit's own intent, so it rounds the wood instead of jittering on
+        // its face. The grind test is intent-based (commanded velocity into the
+        // trunk), not enemy-axis-based: strafe-orbit, relocation and
+        // cover-approach grinds are all perpendicular to the enemy axis and the
+        // old advance/retreat-only gate sat on the bark forever.
+        // Active wall/edge slides keep priority (their key wins); tucked
+        // holders never slide off their tree, nor do cornered last-stands,
+        // rolls or vaults. Contact is re-checked live (not trusted stale), so
+        // a freed unit resumes branch steering at once.
+        if (retreatSlide && !cornered && !u.coverHold && u.rollT <= 0 && !u.vaultT &&
+            (u.escKey === null || u.escKey === undefined || (u.trunkTouch && u.escKey === u.trunkTouch))) {
+          let tk = null, tkx = 0, tky = 0, tgx = 0, tgy = 0;
+          {
+            const tt = u.trunkTouch;
+            if (tt && treeSet.has(tt)) {
+              const qdx = u.x - tt.x, qdy = u.y - (tt.y + 15);
+              const qd2 = qdx * qdx + qdy * qdy, qr = TRUNK_R + def.radius * 0.7 + 6;
+              if (qd2 < qr * qr && qd2 > 0.01) {
+                const qd = Math.sqrt(qd2), mv = Math.sqrt(mvx * mvx + mvy * mvy);
+                // an engaged slide stays engaged while contact persists (its own
+                // steering is tangential, so the into-face test below would read
+                // clean the moment it starts working — that is success, not freedom)
+                if (u.escKey === tt || (mv > 0.3 && -(mvx * qdx + mvy * qdy) / (qd * mv) > 0.3)) {
+                  const sgn = (u.coverSide || 1);
+                  tkx = -qdy / qd * sgn; tky = qdx / qd * sgn;
+                  tgx = mv > 0.01 ? mvx / mv : 0; tgy = mv > 0.01 ? mvy / mv : 0;
+                  tk = tt;
+                }
               }
             }
           }
+          if (tk) {
+            // engagement is sustained contact itself (counted above): positional
+            // pushouts leave velocity high, so a displacement detector stays
+            // blind while the unit rattles on the bark. Twenty steps (~0.3s)
+            // is well past any brush-past, and a false engage still helps —
+            // the slide pushes toward the goal anyway.
+            if (u.escKey !== tk && (u.trunkN || 0) >= 20) { u.escKey = tk; u.escT = 1.0; u.escSx = tkx; u.escSy = tky; u.escGx = tgx; u.escGy = tgy; }
+            if (u.escKey === tk) {
+              u.escT -= dt;
+              if (u.escT <= 0) { u.escT = 1.0; u.escSx = tkx; u.escSy = tky; u.escGx = tgx; u.escGy = tgy; }
+              mvx = u.escSx * 1.2 + u.escGx * 0.15; mvy = u.escSy * 1.2 + u.escGy * 0.15;
+              u.moving = true;
+            }
+          } else if (!u.escKey || (u.trunkTouch && u.escKey === u.trunkTouch)) { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
         }
-        if (tk) {
-          // engagement is sustained contact itself (counted above): positional
-          // pushouts leave velocity high, so a displacement detector stays
-          // blind while the unit rattles on the bark. Twenty steps (~0.3s)
-          // is well past any brush-past, and a false engage still helps —
-          // the slide pushes toward the goal anyway.
-          if (u.escKey !== tk && (u.trunkN || 0) >= 20) { u.escKey = tk; u.escT = 1.0; u.escSx = tkx; u.escSy = tky; u.escGx = tgx; u.escGy = tgy; }
-          if (u.escKey === tk) {
-            u.escT -= dt;
-            if (u.escT <= 0) { u.escT = 1.0; u.escSx = tkx; u.escSy = tky; u.escGx = tgx; u.escGy = tgy; }
-            mvx = u.escSx * 1.2 + u.escGx * 0.15; mvy = u.escSy * 1.2 + u.escGy * 0.15;
+        // walk-around for shielding walls: an advance straight into mid-span
+        // dies on the concrete (engaged vaults stay suppressed) and the weave
+        // only paces the face forever — so sidestep toward the wall's nearer
+        // end while still firing through it. Empty concrete never stops
+        // rounds, so fire is untouched; this only steers the feet. Stable
+        // (axis-projected, no orbit flips) and planted holders are excluded
+        // (their homing never pushes toward the threat). Release has
+        // hysteresis (lane must clear by HW+12, vs HW+3 to engage) so the
+        // slide doesn't chatter on/off rounding the wall's end.
+        if (retreatSlide && !u.coverHold && u.rollT <= 0 && !u.vaultT && !cornered && (mvx * dx + mvy * dy) / d > 0.3) {
+          let bw3 = null, bd3 = Infinity;
+          // advKey stores the wall object itself (stable across steps); the
+          // 5x5 cover-grid query around the unit reaches every wall centered
+          // within 75px, so the min-distance winner matches the old full scan
+          // (dupes across cells can't change a strict min).
+          const contW = (u.advKey !== undefined && u.advKey !== null) ? u.advKey : null;
+          const gcx = ((u.x / TGS) | 0), gcy = ((u.y / TGS) | 0);
+          for (let gx = gcx - 2; gx <= gcx + 2; gx++) for (let gy = gcy - 2; gy <= gcy + 2; gy++) {
+            const cell = tgU.get((gx + 128) * 2048 + (gy + 128));
+            if (!cell) continue;
+            for (const cw of cell) {
+            // barrShield on the cached segment: the wall crosses the
+            // unit->threat lane (center + both ends, like barrShield).
+            // Continuing a slide uses a wider lane (HW+12) than engaging
+            // one (HW+3), so rounding the end doesn't chatter on/off.
+            if (cw.kind !== "barr") continue;
+            const s = barrSeg(cw);
+            const ndx = u.x - cw.x, ndy = u.y - cw.y;
+            if (ndx * ndx + ndy * ndy > 75 * 75) continue; // too far to matter (also releases a slide gone past)
+            const lat = (contW === cw) ? BARR_HW + 12 : BARR_HW + 3;
+            let hit3 = false;
+            const px3 = [s[0], s[2], (s[0] + s[2]) / 2], py3 = [s[1], s[3], (s[1] + s[3]) / 2];
+            for (let qi = 0; qi < 3 && !hit3; qi++) {
+              const rx = px3[qi] - u.x, ry = py3[qi] - u.y;
+              const a3 = (rx * dx + ry * dy) / d;
+              if (a3 < 0 || a3 > d) continue;
+              if (Math.abs(rx * dy - ry * dx) / d < lat) hit3 = true;
+            }
+            if (!hit3) continue;
+            const dd = segDist(u.x, u.y, s[0], s[1], s[2], s[3]);
+            if (dd < bd3) { bd3 = dd; bw3 = cw; }
+            }
+          }
+          if (bw3) {
+            u.advKey = bw3;
+            const bal = (u.x - bw3.x) * bw3.sax + (u.y - bw3.y) * bw3.say;
+            const sgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
+            mvx += bw3.sax * sgn * 1.0; mvy += bw3.say * sgn * 1.0;
+            // corner-pocket grind: two end caps forming a notch shuttle the
+            // slide back and forth with no progress (each wall's nearer end
+            // points into the other, and the nearest wall can alternate every
+            // step). Track displacement while ANY walk-around slide is engaged
+            // — like the escape-slide's escStuck, but keyed on the slide being
+            // continuously active, not on which wall: a slide grinding in place
+            // earns the vault below even across shielding concrete — the hop
+            // lands past the wall toward the threat, which is progress, not
+            // abandoning cover (holders never set advKey, so they can never
+            // earn this).
+            if (cornerVault) {
+              if (u.advGrindX === undefined) { u.advGrindX = u.x; u.advGrindY = u.y; u.advStuck = 1; }
+              else { const gdx = u.x - u.advGrindX, gdy = u.y - u.advGrindY; if (gdx * gdx + gdy * gdy < 36) u.advStuck++; else { u.advGrindX = u.x; u.advGrindY = u.y; u.advStuck = 1; } }
+              if ((u.advStuck || 0) >= 12) u.advDesperate = 2.0;
+            }
             u.moving = true;
-          }
-        } else if (!u.escKey || (u.trunkTouch && u.escKey === u.trunkTouch)) { u.escKey = null; u.escStuck = 0; u.escStuckX = undefined; }
-      }
-      // walk-around for shielding walls: an advance straight into mid-span
-      // dies on the concrete (engaged vaults stay suppressed) and the weave
-      // only paces the face forever — so sidestep toward the wall's nearer
-      // end while still firing through it. Empty concrete never stops
-      // rounds, so fire is untouched; this only steers the feet. Stable
-      // (axis-projected, no orbit flips) and planted holders are excluded
-      // (their homing never pushes toward the threat). Release has
-      // hysteresis (lane must clear by HW+12, vs HW+3 to engage) so the
-      // slide doesn't chatter on/off rounding the wall's end.
-      if (retreatSlide && !u.coverHold && u.rollT <= 0 && !u.vaultT && !cornered && (mvx * dx + mvy * dy) / d > 0.3) {
-        let bw3 = null, bd3 = Infinity;
-        // advKey stores the wall object itself (stable across steps); the
-        // 5x5 cover-grid query around the unit reaches every wall centered
-        // within 75px, so the min-distance winner matches the old full scan
-        // (dupes across cells can't change a strict min).
-        const contW = (u.advKey !== undefined && u.advKey !== null) ? u.advKey : null;
-        const gcx = ((u.x / TGS) | 0), gcy = ((u.y / TGS) | 0);
-        for (let gx = gcx - 2; gx <= gcx + 2; gx++) for (let gy = gcy - 2; gy <= gcy + 2; gy++) {
-          const cell = tgU.get((gx + 128) * 2048 + (gy + 128));
-          if (!cell) continue;
-          for (const cw of cell) {
-          // barrShield on the cached segment: the wall crosses the
-          // unit->threat lane (center + both ends, like barrShield).
-          // Continuing a slide uses a wider lane (HW+12) than engaging
-          // one (HW+3), so rounding the end doesn't chatter on/off.
-          if (cw.kind !== "barr") continue;
-          const s = barrSeg(cw);
-          const ndx = u.x - cw.x, ndy = u.y - cw.y;
-          if (ndx * ndx + ndy * ndy > 75 * 75) continue; // too far to matter (also releases a slide gone past)
-          const lat = (contW === cw) ? BARR_HW + 12 : BARR_HW + 3;
-          let hit3 = false;
-          const px3 = [s[0], s[2], (s[0] + s[2]) / 2], py3 = [s[1], s[3], (s[1] + s[3]) / 2];
-          for (let qi = 0; qi < 3 && !hit3; qi++) {
-            const rx = px3[qi] - u.x, ry = py3[qi] - u.y;
-            const a3 = (rx * dx + ry * dy) / d;
-            if (a3 < 0 || a3 > d) continue;
-            if (Math.abs(rx * dy - ry * dx) / d < lat) hit3 = true;
-          }
-          if (!hit3) continue;
-          const dd = segDist(u.x, u.y, s[0], s[1], s[2], s[3]);
-          if (dd < bd3) { bd3 = dd; bw3 = cw; }
-          }
-        }
-        if (bw3) {
-          u.advKey = bw3;
-          const bal = (u.x - bw3.x) * bw3.sax + (u.y - bw3.y) * bw3.say;
-          const sgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
-          mvx += bw3.sax * sgn * 1.0; mvy += bw3.say * sgn * 1.0;
-          // corner-pocket grind: two end caps forming a notch shuttle the
-          // slide back and forth with no progress (each wall's nearer end
-          // points into the other, and the nearest wall can alternate every
-          // step). Track displacement while ANY walk-around slide is engaged
-          // — like the escape-slide's escStuck, but keyed on the slide being
-          // continuously active, not on which wall: a slide grinding in place
-          // earns the vault below even across shielding concrete — the hop
-          // lands past the wall toward the threat, which is progress, not
-          // abandoning cover (holders never set advKey, so they can never
-          // earn this).
-          if (cornerVault) {
-            if (u.advGrindX === undefined) { u.advGrindX = u.x; u.advGrindY = u.y; u.advStuck = 1; }
-            else { const gdx = u.x - u.advGrindX, gdy = u.y - u.advGrindY; if (gdx * gdx + gdy * gdy < 36) u.advStuck++; else { u.advGrindX = u.x; u.advGrindY = u.y; u.advStuck = 1; } }
-            if ((u.advStuck || 0) >= 12) u.advDesperate = 2.0;
-          }
-          u.moving = true;
+          } else { u.advKey = null; if (cornerVault) { u.advStuck = 0; u.advGrindX = undefined; } }
         } else { u.advKey = null; if (cornerVault) { u.advStuck = 0; u.advGrindX = undefined; } }
-      } else { u.advKey = null; if (cornerVault) { u.advStuck = 0; u.advGrindX = undefined; } }
-      // friendly-fire hold: if an ally stands in the firing lane, sidestep
-      // this tick instead of wasting the shot (no friendly hits in teams).
-      // Detection runs in the formation loop below (same 9 cells, one pass);
-      // the branch reads last step's flag for the crouch/fire gates (one step
-      // of staleness on a heuristic) and applies the same sidestep, while the
-      // formation loop sidesteps fresh detections at once.
-      const allyBlock = !!u.allyBlock;
-      u._e40 = mode === "teams" && engaged && d > 40; // gate for this step's formation scan
-      if (allyBlock) {
-        mvx += oxp * u.strafeDir * 1.2; mvy += oyp * u.strafeDir * 1.2;
-        u.moving = true;
-      }
-      // blocked firing lane (snipers): a trunk crosses the muzzle→target
-      // line — but not the target's own tree while it's tucked behind it:
-      // chipping guarding wood is the counterplay. Hold fire and sidestep for a clear lane instead of
-      // mag-dumping bark into the wood forever (the rooted sniper-duel
-      // stalemate: both sit crouched, every shot eaten by a mid-line trunk).
-      // Barricades never screen a sniper's lane: concrete only stops a round
-      // when someone is actively using that wall as cover (see the bullet
-      // loop), and the target's own wall is a legitimate target anyway — so
-      // walls are skipped here entirely, empty or not.
-      let laneBlocked = false;
-      let wallBlocked = false; // (gunners) any wall eating our shots — see below
-      let trunkBlocked = false; // (gunners) any trunk eating our shots — see below
-      if (engaged && u.kind === "sniper" && d > 40 && u.tx && u.tx.hp > 0) {
-        const lax = Math.cos(u.aim), lay = Math.sin(u.aim);
-        const lside = (u.id % 2 === 0) ? 1 : -1;
-        const ltx = u.x + lax * (def.radius - 9 + def.gunLen) + -lay * 5 * lside;
-        const lty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
-        const lex = leadX - ltx, ley = leadY - lty, ll2 = lex * lex + ley * ley;
-        if (ll2 > 1) {
-          // the target's own tree is a legitimate target only while it's
-          // actively tucked behind it (coverHold) — chipping guarding wood
-          // is the counterplay, passed as the exempt tree below.
-          const exemptL = (u.tx.coverTree && u.tx.coverHold) ? u.tx.coverTree : null;
-          if (laneBlocker(tgU, ltx, lty, lex, ley, ll2, (TRUNK_R + 2) * (TRUNK_R + 2), exemptL)) laneBlocked = true;
-        }
-      }
-      if (laneBlocked) {
-        standSniper = true; // stand up to relocate for a clear lane
-        // committed side (personality, not the flipping orbit): the flip-flop
-        // undoes the walk, so two duelists across a trunk from each other pace
-        // its faces forever instead of rounding it and fighting.
-        mvx += oxp * (u.coverSide || 1) * 1.2; mvy += oyp * (u.coverSide || 1) * 1.2;
-        u.moving = true;
-      }
-      // (gunners) shooting into a covered target's wall: concrete only stops
-      // a round when someone is actively using that wall as cover, so an
-      // empty wall — own, mid-line, or anyone else's — is shot straight
-      // through. Only the TARGET's own covering wall (assigned + tucked +
-      // crossing the muzzle->target lane) holds fire, since those rounds
-      // would die on concrete anyway: slide to the wall's nearer end for a
-      // clear angle instead (still crouched when tucked). The slide commits
-      // to one side — never the flipping orbit direction — so holders can't
-      // jink-oscillate in place forever: it converges past the end and the
-      // lane opens (trees' narrow trunks have their own rule below).
-      if (engaged && u.kind !== "sniper" && d > 40 && u.tx && u.tx.hp > 0) {
-        const lax = Math.cos(u.aim), lay = Math.sin(u.aim);
-        const lside = (u.id % 2 === 0) ? 1 : -1;
-        const wtx = u.x + lax * (def.radius - 9 + def.gunLen) + -lay * 5 * lside;
-        const wty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
-        const wex = leadX - wtx, wey = leadY - wty, wl2 = wex * wex + wey * wey;
-        let wbWt = null;
-        if (wl2 > 1) {
-          const ct = u.tx.coverTree;
-          if (ct && ct.kind === "barr" && u.tx.coverHold && treeSet.has(ct)) {
-            const ws = barrSeg(ct);
-            if (segSegDist(wtx, wty, leadX, leadY, ws[0], ws[1], ws[2], ws[3]) < BARR_HW + 1) { wallBlocked = true; wbWt = ct; }
-          }
-        }
-        if (wallBlocked) {
-          // committed slide to the blocker's nearer end (stable across jinks)
-          barrSeg(wbWt); // baked axis (fills lazily for old saves)
-          const bax = wbWt.sax, bay = wbWt.say;
-          const bdx = u.x - wbWt.x, bdy = u.y - wbWt.y;
-          const bal = bdx * bax + bdy * bay;
-          const bsgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
-          mvx += bax * bsgn * 1.4; mvy += bay * bsgn * 1.4;
+        // friendly-fire hold: if an ally stands in the firing lane, sidestep
+        // this tick instead of wasting the shot (no friendly hits in teams).
+        // Detection runs in the formation loop below (same 9 cells, one pass);
+        // the branch reads last step's flag for the crouch/fire gates (one step
+        // of staleness on a heuristic) and applies the same sidestep, while the
+        // formation loop sidesteps fresh detections at once.
+        const allyBlock = !!u.allyBlock;
+        u._e40 = mode === "teams" && engaged && d > 40; // gate for this step's formation scan
+        if (allyBlock) {
+          mvx += oxp * u.strafeDir * 1.2; mvy += oyp * u.strafeDir * 1.2;
           u.moving = true;
         }
-      }
-      // (gunners) shooting into a trunk: bark eats those rounds, so a
-      // non-target trunk crossing the muzzle->target lane holds fire —
-      // sidestep for a clear lane instead of mag-dumping wood. The target's
-      // own tree stays legitimate while it's actively tucked behind it
-      // (coverHold): chipping guarding wood is the counterplay. Same gate as
-      // the sniper lane-block above, snipers untouched.
-      if (engaged && u.kind !== "sniper" && d > 40 && u.tx && u.tx.hp > 0) {
-        const lax = Math.cos(u.aim), lay = Math.sin(u.aim);
-        const lside = (u.id % 2 === 0) ? 1 : -1;
-        const ttx = u.x + lax * (def.radius - 9 + def.gunLen) + -lay * 5 * lside;
-        const tty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
-        const tex = leadX - ttx, tey = leadY - tty, tl2 = tex * tex + tey * tey;
-        if (tl2 > 1) {
-          // same exempt rule as the sniper lane-block above.
-          const exemptT = (u.tx.coverTree && u.tx.coverHold) ? u.tx.coverTree : null;
-          if (laneBlocker(tgU, ttx, tty, tex, tey, tl2, (TRUNK_R + 2) * (TRUNK_R + 2), exemptT)) trunkBlocked = true;
+        // blocked firing lane (snipers): a trunk crosses the muzzle→target
+        // line — but not the target's own tree while it's tucked behind it:
+        // chipping guarding wood is the counterplay. Hold fire and sidestep for a clear lane instead of
+        // mag-dumping bark into the wood forever (the rooted sniper-duel
+        // stalemate: both sit crouched, every shot eaten by a mid-line trunk).
+        // Barricades never screen a sniper's lane: concrete only stops a round
+        // when someone is actively using that wall as cover (see the bullet
+        // loop), and the target's own wall is a legitimate target anyway — so
+        // walls are skipped here entirely, empty or not.
+        laneBlocked = false;
+        wallBlocked = false; // (gunners) any wall eating our shots — see below
+        trunkBlocked = false; // (gunners) any trunk eating our shots — see below
+        if (engaged && u.kind === "sniper" && d > 40 && u.tx && u.tx.hp > 0) {
+          const lax = Math.cos(u.aim), lay = Math.sin(u.aim);
+          const lside = (u.id % 2 === 0) ? 1 : -1;
+          const ltx = u.x + lax * (def.radius - 9 + def.gunLen) + -lay * 5 * lside;
+          const lty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
+          const lex = leadX - ltx, ley = leadY - lty, ll2 = lex * lex + ley * ley;
+          if (ll2 > 1) {
+            // the target's own tree is a legitimate target only while it's
+            // actively tucked behind it (coverHold) — chipping guarding wood
+            // is the counterplay, passed as the exempt tree below.
+            const exemptL = (u.tx.coverTree && u.tx.coverHold) ? u.tx.coverTree : null;
+            if (laneBlocker(tgU, ltx, lty, lex, ley, ll2, (TRUNK_R + 2) * (TRUNK_R + 2), exemptL)) laneBlocked = true;
+          }
         }
-        if (trunkBlocked) {
-          // committed side, same as the sniper lane-block above: the flipping
-          // orbit paces the trunk forever instead of rounding it.
+        if (laneBlocked) {
+          standSniper = true; // stand up to relocate for a clear lane
+          // committed side (personality, not the flipping orbit): the flip-flop
+          // undoes the walk, so two duelists across a trunk from each other pace
+          // its faces forever instead of rounding it and fighting.
           mvx += oxp * (u.coverSide || 1) * 1.2; mvy += oyp * (u.coverSide || 1) * 1.2;
           u.moving = true;
         }
-      }
-      // snipers root while crouching: a crouched sniper is a firing platform
-      // and does not maneuver — relocation branches stand them up first
-      // (standSniper), so crouch decays and then they walk. Soldiers crouch
-      // freely and are untouched by this.
-      if (u.kind === "sniper" && (u.crouch || 0) > 0.5) { mvx = 0; mvy = 0; u.moving = false; u.running = false; }
-      // crouch into a steady firing stance when holding
-      // (not advancing/fleeing/rolling/relocating)
-      const wantCrouch = engaged && !allyBlock && !laneBlocked && !(u.kind === "sniper" && standSniper);
-      u.crouch = Math.max(0, Math.min(1, (u.crouch || 0) + ((wantCrouch ? 1 : 0) - (u.crouch || 0)) * Math.min(1, dt * 4)));
-      // fire only from an aimed stance: re-check alignment against the
-      // predicted position, so carry-position guns never discharge.
-      let daFire = wantLead - u.aim;
-      while (daFire > Math.PI) daFire -= Math.PI * 2; while (daFire < -Math.PI) daFire += Math.PI * 2;
-      // wallBlocked/trunkBlocked ride the same gate: no mag-dumping our own
-      // concrete or bark
-      if (u.cool <= 0 && engaged && !allyBlock && !laneBlocked && !wallBlocked && !trunkBlocked && Math.abs(daFire) < 0.22 && u.reloading <= 0) { u.cool = def.interval * (0.85 + Math.random() * 0.3); fire(u, def); }
-      // gun-bash: an empty gun is still a club. Out of ammo with an enemy
-      // hugging us, shove them back for low damage (own cooldown; the reload
-      // keeps ticking underneath). A bash kill ALWAYS takes the headgear.
-      if ((u.ammo || 0) <= 0 && (u.bashCd || 0) <= 0 && u.rollT <= 0) {
-        let victim = null;
-        if (u.tx && u.tx.hp > 0) {
-          const tdef = UNIT_DEFS[u.tx.kind] || def;
-          if (d <= def.radius + tdef.radius + 18) victim = u.tx;
-        }
-        if (!victim) {
-          let bd2 = Infinity;
-          const qx = (u.x / UGS) | 0, qy = (u.y / UGS) | 0;
-          for (let ix = qx - 1; ix <= qx + 1; ix++) for (let iy = qy - 1; iy <= qy + 1; iy++) {
-            const cell = grid.get(ugk3(ix, iy)); if (!cell) continue;
-            for (const o of cell) {
-              if (!isEnemy(u, o)) continue;
-              const tdef = UNIT_DEFS[o.kind] || def;
-              const reach = def.radius + tdef.radius + 18;
-              const rx = o.x - u.x, ry = o.y - u.y, d2 = rx * rx + ry * ry;
-              if (d2 < reach * reach && d2 < bd2) { bd2 = d2; victim = o; }
+        // (gunners) shooting into a covered target's wall: concrete only stops
+        // a round when someone is actively using that wall as cover, so an
+        // empty wall — own, mid-line, or anyone else's — is shot straight
+        // through. Only the TARGET's own covering wall (assigned + tucked +
+        // crossing the muzzle->target lane) holds fire, since those rounds
+        // would die on concrete anyway: slide to the wall's nearer end for a
+        // clear angle instead (still crouched when tucked). The slide commits
+        // to one side — never the flipping orbit direction — so holders can't
+        // jink-oscillate in place forever: it converges past the end and the
+        // lane opens (trees' narrow trunks have their own rule below).
+        if (engaged && u.kind !== "sniper" && d > 40 && u.tx && u.tx.hp > 0) {
+          const lax = Math.cos(u.aim), lay = Math.sin(u.aim);
+          const lside = (u.id % 2 === 0) ? 1 : -1;
+          const wtx = u.x + lax * (def.radius - 9 + def.gunLen) + -lay * 5 * lside;
+          const wty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
+          const wex = leadX - wtx, wey = leadY - wty, wl2 = wex * wex + wey * wey;
+          let wbWt = null;
+          if (wl2 > 1) {
+            const ct = u.tx.coverTree;
+            if (ct && ct.kind === "barr" && u.tx.coverHold && treeSet.has(ct)) {
+              const ws = barrSeg(ct);
+              if (segSegDist(wtx, wty, leadX, leadY, ws[0], ws[1], ws[2], ws[3]) < BARR_HW + 1) { wallBlocked = true; wbWt = ct; }
             }
           }
+          if (wallBlocked) {
+            // committed slide to the blocker's nearer end (stable across jinks)
+            barrSeg(wbWt); // baked axis (fills lazily for old saves)
+            const bax = wbWt.sax, bay = wbWt.say;
+            const bdx = u.x - wbWt.x, bdy = u.y - wbWt.y;
+            const bal = bdx * bax + bdy * bay;
+            const bsgn = bal > 2 ? 1 : (bal < -2 ? -1 : (u.coverSide || 1));
+            mvx += bax * bsgn * 1.4; mvy += bay * bsgn * 1.4;
+            u.moving = true;
+          }
         }
-        if (victim) {
-          const vdx = victim.x - u.x, vdy = victim.y - u.y, vl = Math.max(1, Math.sqrt(vdx * vdx + vdy * vdy));
-          const vnx = vdx / vl, vny = vdy / vl;
-          const BASH_DMG = u.kind === "sniper" ? 8 : 10;
-          u.bashCd = 0.9;
-          u.aim = Math.atan2(vdy, vdx); // face the shove
-          u.recoil = 1; // visible gun-jab through the normal kick visuals
-          u.lungeT = u.lungeDur = 0.3; u.lungeDx = vnx; u.lungeDy = vny; // step-in thrust at the victim (unitFrame leans the body+gun in)
-          for (let k = 0; k < 3; k++) // back-foot spray/dust kicking off the lunge (pale spray when the basher stands in water)
-            parts.push({ x: u.x - vnx * 10 + (Math.random()*8-4), y: u.y + 20, vx: -vnx * 60 + (Math.random()*40-20), vy: -10 - Math.random()*20, life: 0.35, max: 0.35, c: (u.inWater ? "rgba(220,240,255,0.6)" : "rgba(190,170,130,0.55)"), s: 2 });
-          poof((u.x + victim.x) / 2, (u.y + victim.y) / 2, "rgba(220,220,220,0.9)", 4);
-          victim.hp -= BASH_DMG;
-          victim.hitT = simT; // fresh hit: the 10s out-of-combat heal clock restarts
-          noteAttack(victim, u.x, u.y); // shout: the basher is right here — nearby allies overhear it
-          victim.burst = (victim.burst || 0) + BASH_DMG;
-          if ((victim.helmet || victim.hat) && victim.burst >= 100) { victim.burst = 0; loseHelmet(victim); }
-          victim.vx = (victim.vx || 0) + vnx * 130;
-          victim.vy = (victim.vy || 0) + vny * 130;
-          hitSpark(victim.x, victim.y);
-          if (victim.hp <= 0) kill(victim, vnx * 130, vny * 130, { bash: true });
+        // (gunners) shooting into a trunk: bark eats those rounds, so a
+        // non-target trunk crossing the muzzle->target lane holds fire —
+        // sidestep for a clear lane instead of mag-dumping wood. The target's
+        // own tree stays legitimate while it's actively tucked behind it
+        // (coverHold): chipping guarding wood is the counterplay. Same gate as
+        // the sniper lane-block above, snipers untouched.
+        if (engaged && u.kind !== "sniper" && d > 40 && u.tx && u.tx.hp > 0) {
+          const lax = Math.cos(u.aim), lay = Math.sin(u.aim);
+          const lside = (u.id % 2 === 0) ? 1 : -1;
+          const ttx = u.x + lax * (def.radius - 9 + def.gunLen) + -lay * 5 * lside;
+          const tty = u.y + 4 + lay * (def.radius - 9 + def.gunLen) + lax * 5 * lside;
+          const tex = leadX - ttx, tey = leadY - tty, tl2 = tex * tex + tey * tey;
+          if (tl2 > 1) {
+            // same exempt rule as the sniper lane-block above.
+            const exemptT = (u.tx.coverTree && u.tx.coverHold) ? u.tx.coverTree : null;
+            if (laneBlocker(tgU, ttx, tty, tex, tey, tl2, (TRUNK_R + 2) * (TRUNK_R + 2), exemptT)) trunkBlocked = true;
+          }
+          if (trunkBlocked) {
+            // committed side, same as the sniper lane-block above: the flipping
+            // orbit paces the trunk forever instead of rounding it.
+            mvx += oxp * (u.coverSide || 1) * 1.2; mvy += oyp * (u.coverSide || 1) * 1.2;
+            u.moving = true;
+          }
         }
-      }
-    } else {
-      // no visible enemy: presence-aware idle. Nobody to shoot — but with
-      // live enemies somewhere, walk the last confirmed contact (or a fresh
-      // search waypoint) instead of standing around. The goal is a memory
-      // or a guess, never live knowledge: reaching it or a 12s expiry
-      // spends it and searches somewhere new.
-      u.running = false; u.cornered = false;
-      u.crouch = (u.crouch || 0) * Math.max(0, 1 - dt * 4); // stand back up with no target
-      // presence, not position: peacetime keeps the old drift/camp, while
-      // any live enemy puts targetless units on the move
-      const anyFoe = mode === "ffa" ? liveN > 1 : liveN - (liveF[u.faction] || 0) > 0;
-      let camped = false;
-      if (u.kind === "sniper" && u.cover && trees.length && !anyFoe) {
-        let bt = null, bs = Infinity, bd2 = 0;
-        for (const t of trees) {
-          const rx = t.x - u.x, ry = t.y - u.y, d2 = rx * rx + ry * ry;
-          const scored = d2 - (t.kind === "barr" ? 150 * 150 : 0);
-          if (d2 > 340 * 340 || scored >= bs) continue;
-          bs = scored; bt = t; bd2 = d2;
+        // snipers root while crouching: a crouched sniper is a firing platform
+        // and does not maneuver — relocation branches stand them up first
+        // (standSniper), so crouch decays and then they walk. Soldiers crouch
+        // freely and are untouched by this.
+        if (u.kind === "sniper" && (u.crouch || 0) > 0.5) { mvx = 0; mvy = 0; u.moving = false; u.running = false; }
+        gunsStep(u, def, d, engaged, allyBlock, wantLead, laneBlocked, wallBlocked, trunkBlocked, standSniper);
+      } else {
+        // no visible enemy: presence-aware idle. Nobody to shoot — but with
+        // live enemies somewhere, walk the last confirmed contact (or a fresh
+        // search waypoint) instead of standing around. The goal is a memory
+        // or a guess, never live knowledge: reaching it or a 12s expiry
+        // spends it and searches somewhere new.
+        u.running = false; u.cornered = false;
+        u.crouch = (u.crouch || 0) * Math.max(0, 1 - dt * 4); // stand back up with no target
+        // presence, not position: peacetime keeps the old drift/camp, while
+        // any live enemy puts targetless units on the move
+        const anyFoe = mode === "ffa" ? liveN > 1 : liveN - (liveF[u.faction] || 0) > 0;
+        let camped = false;
+        if (u.kind === "sniper" && u.cover && trees.length && !anyFoe) {
+          let bt = null, bs = Infinity, bd2 = 0;
+          for (const t of trees) {
+            const rx = t.x - u.x, ry = t.y - u.y, d2 = rx * rx + ry * ry;
+            const scored = d2 - (t.kind === "barr" ? 150 * 150 : 0);
+            if (d2 > 340 * 340 || scored >= bs) continue;
+            bs = scored; bt = t; bd2 = d2;
+          }
+          if (bt) {
+            const bd = Math.max(1, Math.sqrt(bd2));
+            if (bd > 45) { mvx = (bt.x - u.x) / bd * 0.7; mvy = (bt.y - u.y) / bd * 0.7; }
+            else { mvx = 0; mvy = 0; } // posted at the wood: wait
+            camped = true;
+          }
         }
-        if (bt) {
-          const bd = Math.max(1, Math.sqrt(bd2));
-          if (bd > 45) { mvx = (bt.x - u.x) / bd * 0.7; mvy = (bt.y - u.y) / bd * 0.7; }
-          else { mvx = 0; mvy = 0; } // posted at the wood: wait
-          camped = true;
-        }
-      }
-      if (!camped) {
-        if (anyFoe) {
-          // overheard attack: a same-faction ally got hit within the last ~6s
-          // and shouted — adopt the area (own noisy guess, never exact) unless
-          // already chasing this exact shout. Wounded sitters sit it out.
-          if (mode === "teams") {
-            const al = factionAlert[u.faction];
-            if (al && u.alertHeard !== al.t && simT - al.t < 6 && u.hp >= u.maxHp * (u.fleeHp || 0.35)) {
-              const adx = al.x - u.x, ady = al.y - u.y;
-              if (adx * adx + ady * ady < 520 * 520) {
-                u.seenX = Math.max(40, Math.min(FW - 40, al.x + (Math.random() * 160 - 80)));
-                u.seenY = Math.max(40, Math.min(FH - 40, al.y + (Math.random() * 160 - 80)));
-                u.expX = NaN; u.expY = NaN; u.goalT = 12; u.alertHeard = al.t;
+        if (!camped) {
+          if (anyFoe) {
+            // overheard attack: a same-faction ally got hit within the last ~6s
+            // and shouted — adopt the area (own noisy guess, never exact) unless
+            // already chasing this exact shout. Wounded sitters sit it out.
+            if (mode === "teams") {
+              const al = factionAlert[u.faction];
+              if (al && u.alertHeard !== al.t && simT - al.t < 6 && u.hp >= u.maxHp * (u.fleeHp || 0.35)) {
+                const adx = al.x - u.x, ady = al.y - u.y;
+                if (adx * adx + ady * ady < 520 * 520) {
+                  u.seenX = Math.max(40, Math.min(FW - 40, al.x + (Math.random() * 160 - 80)));
+                  u.seenY = Math.max(40, Math.min(FH - 40, al.y + (Math.random() * 160 - 80)));
+                  u.expX = NaN; u.expY = NaN; u.goalT = 12; u.alertHeard = al.t;
+                }
               }
             }
+            // search: last confirmed contact first, else a waypoint guess.
+            // Arrival spends the goal; a 12s expiry unsticks unreachable ones.
+            if (isFinite(u.seenX + u.seenY) && Math.hypot(u.seenX - u.x, u.seenY - u.y) < 60) { u.seenX = NaN; u.seenY = NaN; }
+            if ((!isFinite(u.seenX + u.seenY) && (!isFinite(u.expX + u.expY) || Math.hypot(u.expX - u.x, u.expY - u.y) < 60)) || u.goalT <= 0) {
+              u.seenX = NaN; u.seenY = NaN;
+              // fresh search waypoint, weighted to midfield where contact is likely — never the far corners
+              if (Math.random() < 0.5) { u.expX = 60 + Math.random() * (FW - 120); u.expY = 60 + Math.random() * (FH - 120); }
+              else { u.expX = FW / 2 + (Math.random() + Math.random() - 1) * FW * 0.3; u.expY = FH / 2 + (Math.random() + Math.random() - 1) * FH * 0.3; }
+              u.expX = Math.max(40, Math.min(FW - 40, u.expX)); u.expY = Math.max(40, Math.min(FH - 40, u.expY));
+              u.goalT = 12;
+              u.runLeg = Math.random() < 0.5; // this leg's pace: run some guesses, walk the rest
+            }
+            const hasMem = isFinite(u.seenX + u.seenY);
+            const gx = hasMem ? u.seenX : u.expX, gy = hasMem ? u.seenY : u.expY;
+            const gd = Math.max(1, Math.hypot(gx - u.x, gy - u.y));
+            mvx = (gx - u.x) / gd * 0.7; mvy = (gy - u.y) / gd * 0.7;
+            // face the search: muzzle along the march, settled, no wag
+            let ga = Math.atan2(gy - u.y, gx - u.x) - u.aim;
+            while (ga > Math.PI) ga -= Math.PI * 2; while (ga < -Math.PI) ga += Math.PI * 2;
+            if (Math.abs(ga) > 0.12) u.aim += ga * Math.min(1, dt * 2);
+            // pace: far-off memories (contacts and shouts) are worth running
+            // for; guesses run on eager legs and walk the rest. Hurt units
+            // never sprint toward maybe-enemies.
+            const hurtS = u.hp < u.maxHp * (u.fleeHp || 0.35);
+            u.running = !hurtS && (hasMem ? gd > 160 : (u.runLeg && gd > 120));
+          } else {
+            mvx = Math.cos(u.seed + simT * 0.2) * 0.15;
+            mvy = Math.sin(u.seed * 1.7 + simT * 0.2) * 0.15;
           }
-          // search: last confirmed contact first, else a waypoint guess.
-          // Arrival spends the goal; a 12s expiry unsticks unreachable ones.
-          u.goalT -= dt;
-          if (isFinite(u.seenX + u.seenY) && Math.hypot(u.seenX - u.x, u.seenY - u.y) < 60) { u.seenX = NaN; u.seenY = NaN; }
-          if ((!isFinite(u.seenX + u.seenY) && (!isFinite(u.expX + u.expY) || Math.hypot(u.expX - u.x, u.expY - u.y) < 60)) || u.goalT <= 0) {
-            u.seenX = NaN; u.seenY = NaN;
-            // fresh search waypoint, weighted to midfield where contact is likely — never the far corners
-            if (Math.random() < 0.5) { u.expX = 60 + Math.random() * (FW - 120); u.expY = 60 + Math.random() * (FH - 120); }
-            else { u.expX = FW / 2 + (Math.random() + Math.random() - 1) * FW * 0.3; u.expY = FH / 2 + (Math.random() + Math.random() - 1) * FH * 0.3; }
-            u.expX = Math.max(40, Math.min(FW - 40, u.expX)); u.expY = Math.max(40, Math.min(FH - 40, u.expY));
-            u.goalT = 12;
-            u.runLeg = Math.random() < 0.5; // this leg's pace: run some guesses, walk the rest
-          }
-          const hasMem = isFinite(u.seenX + u.seenY);
-          const gx = hasMem ? u.seenX : u.expX, gy = hasMem ? u.seenY : u.expY;
-          const gd = Math.max(1, Math.hypot(gx - u.x, gy - u.y));
-          mvx = (gx - u.x) / gd * 0.7; mvy = (gy - u.y) / gd * 0.7;
-          // face the search: muzzle along the march, settled, no wag
-          let ga = Math.atan2(gy - u.y, gx - u.x) - u.aim;
-          while (ga > Math.PI) ga -= Math.PI * 2; while (ga < -Math.PI) ga += Math.PI * 2;
-          if (Math.abs(ga) > 0.12) u.aim += ga * Math.min(1, dt * 2);
-          // pace: far-off memories (contacts and shouts) are worth running
-          // for; guesses run on eager legs and walk the rest. Hurt units
-          // never sprint toward maybe-enemies.
-          const hurtS = u.hp < u.maxHp * (u.fleeHp || 0.35);
-          u.running = !hurtS && (hasMem ? gd > 160 : (u.runLeg && gd > 120));
-        } else {
-          mvx = Math.cos(u.seed + simT * 0.2) * 0.15;
-          mvy = Math.sin(u.seed * 1.7 + simT * 0.2) * 0.15;
         }
       }
+      u._dec = { mvx, mvy, engaged, wantLead, laneBlocked, wallBlocked, trunkBlocked, standSniper };
+    } else { // staggered decide: reuse last step's intent/flags; timers ticked above, guns stay live
+      mvx = u._dec.mvx; mvy = u._dec.mvy; engaged = u._dec.engaged; wantLead = u._dec.wantLead;
+      laneBlocked = u._dec.laneBlocked; wallBlocked = u._dec.wallBlocked; trunkBlocked = u._dec.trunkBlocked;
+      standSniper = u._dec.standSniper;
+      if (u.tx && u.tx.hp > 0) {
+        dx = u.tx.x - u.x; dy = u.tx.y - u.y; d = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        limp = u.hp < u.maxHp * (u.fleeHp || 0.35) ? 0.8 : 1;
+      } else { dx = 0; dy = 0; d = Infinity; limp = 1; }
+      if (u.tx && u.tx.hp > 0) { const wl = aimStep(u, def, d, dx, dy, engaged); gunsStep(u, def, d, engaged, !!u.allyBlock, wl, laneBlocked, wallBlocked, trunkBlocked, standSniper); }
     }
     // skirmish-line formation: shoulder-to-shoulder spacing, not a ball.
     // Repulsion vs allies is anisotropic around the threat axis (toward the
@@ -4044,10 +4145,10 @@ function step(dt) {
     } else {
     const cx = (u.x / UGS) | 0, cy = (u.y / UGS) | 0;
     for (let ix = cx - 1; ix <= cx + 1; ix++) for (let iy = cy - 1; iy <= cy + 1; iy++) {
-      const cell = grid.get(ugk3(ix, iy)); if (!cell) continue;
+      const cell = grid.get((ix + 128) * 2048 + (iy + 128)); if (!cell) continue; // inlined ugk3 (same key, minus the call)
       for (const o of cell) {
         if (o === u || o.hp <= 0) continue;
-        const allied = mode === "teams" && o.faction === u.faction;
+        const allied = teamsMode && o.faction === u.faction;
         const dx = u.x - o.x, dy = u.y - o.y, d2 = dx*dx + dy*dy;
         if (!allied) {
           // enemies (or everyone in FFA): keep a simple radial bubble
@@ -4085,7 +4186,7 @@ function step(dt) {
     mvx += sx * 1.8 + fx; mvy += sy * 1.8 + fy;
     if (anc > 0) {
       const hurt = u.hp < u.maxHp * (u.fleeHp || 0.35);
-      const advancing2 = u.tx ? u.td > (UNIT_DEFS[u.kind].range || 250) : true;
+      const advancing2 = u.tx ? u.td > (def.range || 250) : true;
       // march together on the advance, rally when hurt, but never collapse
       // onto the centroid while holding the line
       const coh = hurt ? 0.02 : advancing2 ? 0.006 : 0;
@@ -4114,22 +4215,9 @@ function step(dt) {
       if (tdd <= def.range && tdd >= tMinD && !routing && !seeking) {
         const mll = Math.sqrt(mvx * mvx + mvy * mvy);
         if (mll > 0.3) {
-          let bw = null, bd = Infinity;
-          // 5x5 cover-grid query (every wall centered within ±60px reaches
-          // the queried cells): same nearest wall as the old full scan.
-          const bcx = ((u.x / TGS) | 0), bcy = ((u.y / TGS) | 0);
-          for (let bx = bcx - 2; bx <= bcx + 2; bx++) for (let by = bcy - 2; by <= bcy + 2; by++) {
-            const bcell = tgU.get((bx + 128) * 2048 + (by + 128));
-            if (!bcell) continue;
-            for (const bt of bcell) {
-            if (bt.kind !== "barr") continue;
-            const crx = bt.x - u.x, cry = bt.y - u.y;
-            if (crx > 60 || crx < -60 || cry > 60 || cry < -60) continue;
-            const bs = barrSeg(bt);
-            const dd = segDist(u.x, u.y, bs[0], bs[1], bs[2], bs[3]);
-            if (dd < bd) { bd = dd; bw = bt; }
-            }
-          }
+          // nearest wall from the pre-step marking above (identical result to
+          // the old per-unit 5x5 scan: same ±60 box, same min segment distance)
+          const bw = (u._bwT === stepTick) ? u._bw : null, bd = (u._bwT === stepTick) ? u._bwD : Infinity;
           if (bw && bd < BARR_HW + def.radius + 14) {
             barrSeg(bw); // baked segment + axis (fills lazily for old saves)
             const ex = bw.sx2 - bw.sx1, ey = bw.sy2 - bw.sy1, L2 = (ex * ex + ey * ey) || 1;
@@ -4168,7 +4256,8 @@ function step(dt) {
     let dvx = 0, dvy = 0;
     if (sml > 0.01) {
       const RUN_MULT = 1.8;
-      const sp = def.speed * (u.spdMul || 1) * limp * (u.running ? RUN_MULT : 1) * Math.min(1, sml) * floorBoostAt(fgU, u.x, u.y);
+      const uFlB = topFloorAt(fgU, u.x, u.y); // one lookup serves the boost below (water flags reuse their own post-move lookup)
+      const sp = def.speed * (u.spdMul || 1) * limp * (u.running ? RUN_MULT : 1) * Math.min(1, sml) * (uFlB ? (uFlB.boost || 1) : 1);
       dvx = u.smvx / sml * sp; dvy = u.smvy / sml * sp;
       u.moving = true;
     }
@@ -4209,14 +4298,17 @@ function step(dt) {
     const r = def.radius;
     u.x = Math.max(r, Math.min(FW - r, u.x)); u.y = Math.max(r, Math.min(FH - r, u.y));
     u.trunkPrev = u.trunkTouch; u.trunkTouch = null; // this step's contact, counted below
-    // shallow water: track entry/exit off the version-cached floor grid (one
-    // cell lookup per unit — same cost class as the boost lookup above).
-    // In/out transitions splash + play a low vault-like hop (animation only:
-    // no collision skip, no carry). Fresh-out units glisten 5s (wetT); wading
-    // wakes and post-exit drips are throttled puffs, capped with the rest.
+    // shallow or deep water: track entry/exit off the version-cached floor
+    // grid (one cell lookup per unit — same cost class as the boost lookup
+    // above; deep costs one more, but only while wet). In/out transitions
+    // splash + play a low vault-like hop (animation only: no collision skip,
+    // no carry). Fresh-out units glisten 5s (wetT); wading wakes and
+    // post-exit drips are throttled puffs, capped with the rest.
     {
-      const wasW = u.inWater, nowW = inWaterAt(fgU, u.x, u.y);
+      const wasW = u.inWater, wFl = topFloorAt(fgU, u.x, u.y);
+      const nowW = !!wFl && (wFl.kind === "water" || wFl.kind === "deepwater");
       u.inWater = nowW;
+      u.inDeep = nowW && wFl.kind === "deepwater"; // deep swimmers half-submerge (render + corpses read this)
       if (nowW) u.wetT = 5; else if (u.wetT > 0) u.wetT = Math.max(0, u.wetT - dt);
       u.wadeCd = Math.max(0, (u.wadeCd || 0) - dt);
       u.wadeHopT = Math.max(0, (u.wadeHopT || 0) - dt);
@@ -4225,9 +4317,9 @@ function step(dt) {
         u.wadeHopT = 0.45; u.wadeCd = 0.9; // little jump over the waterline (vaults skip it: their own landing dip covers the touchdown)
       }
       if (nowW && spd > 8 && parts.length < 1200 && Math.random() < dt * 3) // wading wake: small and slow, like the walk through it
-        parts.push({ x: u.x + (Math.random()*16-8), y: u.y + 14, vx: (Math.random()*20-10), vy: -12 - Math.random()*14, life: 0.45, max: 0.45, c: "rgba(220,240,255,0.55)", s: 1.5 + Math.random()*1.5 });
+        parts.push({ x: u.x + (Math.random()*16-8), y: u.y + 14, vx: (Math.random()*20-10), vy: -12 - Math.random()*14, life: 0.45, max: 0.45, c: "rgba(220,240,255,0.55)", s: 1.5 + Math.random()*1.5, under: true });
       else if (!nowW && (u.wetT || 0) > 0 && parts.length < 1200 && Math.random() < dt * 6) // post-exit drips off the glistening body
-        parts.push({ x: u.x + (Math.random()*14-7), y: u.y - 4, vx: (Math.random()*16-8), vy: -10 - Math.random()*20, g: 500, life: 0.4, max: 0.4, c: "rgba(190,220,250,0.7)", s: 1.4 });
+        parts.push({ x: u.x + (Math.random()*14-7), y: u.y - 4, vx: (Math.random()*16-8), vy: -10 - Math.random()*20, g: 500, life: 0.4, max: 0.4, c: "rgba(190,220,250,0.7)", s: 1.4, under: true });
     }
     // Body vs cover: trunks are solid (the canopy overhangs, the trunk
     // blocks); barricades vault (mid-span crossings hop over, ends deflect).
@@ -4399,11 +4491,11 @@ function step(dt) {
       if (!dead) {
         const bcx = ((b.x / UGS) | 0), bcy = ((b.y / UGS) | 0);
         outer: for (let ix = bcx - 1; ix <= bcx + 1; ix++) for (let iy = bcy - 1; iy <= bcy + 1; iy++) {
-          const cell = grid.get(ugk3(ix, iy)); if (!cell) continue;
+          const cell = grid.get((ix + 128) * 2048 + (iy + 128)); if (!cell) continue; // inlined ugk3 (same key, minus the call)
           for (const u of cell) {
             if (u.hp <= 0 || u.id === b.owner) continue;
             if (mode === "teams" && u.faction === b.faction) continue;
-            const rr = UNIT_DEFS[u.kind].radius + 2;
+            const rr = u.radius + 2;
             const dx = u.x - b.x, dy = u.y - b.y;
             if (dx*dx + dy*dy < rr*rr) {
               // tucked behind cover: most aimed shots chew cover instead of flesh —
@@ -4549,7 +4641,10 @@ function step(dt) {
   }
   for (let i = corpses.length - 1; i >= 0; i--) {
     corpses[i].age = (corpses[i].age || 0) + dt;
-    if (corpses[i].age > 30) corpses.splice(i, 1);
+    // deep-water dead sink under the surface and vanish at 20s (the render
+    // loop below plays the descent); everywhere else bodies fade out at 30s
+    const cdeep = inDeepWaterAt(floorGridGet(), corpses[i].x, corpses[i].y);
+    if (corpses[i].age > (cdeep ? 20 : 30)) corpses.splice(i, 1);
   }
   if (corpses.length > 500) corpses.splice(0, corpses.length - 500);
   // gunshot holes vanish after 10s, fading over the last 2s. All holes draw
@@ -4568,7 +4663,7 @@ function step(dt) {
     const h = helmets[i];
     h.t += dt;
     if (h.t > 10) { helmets.splice(i, 1); continue; } // fallen headgear despawns 10s after knock-off (fades over the last 2s)
-    if (h.y >= h.gy - 2 && inWaterAt(floorGridGet(), h.x, h.y)) { // knocked-off hats that reach water vanish instantly with a splash (rolling hats that wash in go the same way)
+    if (h.y >= h.gy - 2 && inWaterAt(floorGridGet(), h.x, h.y)) { // hats that reach water splash and sink: instant remove (rolling wash-ins vanish on entry the same way)
       if (parts.length < 1200) splashAt(h.x, h.y, 1.0);
       helmets.splice(i, 1); continue;
     }
@@ -4658,9 +4753,10 @@ function step(dt) {
   else winner = (!ffaTwo && ffaFirst && units.length >= 1) ? ffaFirst.faction : null;
 }
 function kill(u, bvx, bvy, b) {
+  if (u.dead) return; // already processed (a second bullet landing the same tick must not double-count the kill or stack a second corpse)
   // spawner census was snapshotted while this unit was alive — keep it exact
   if (u.hp > 0 && u.sp) spCount.set(u.sp, (spCount.get(u.sp) || 1) - 1);
-  if (u.hp > 0) u.hp = 0; // direct kills (bash) must not leave ghosts counted as alive
+  u.hp = 0; u.dead = true; // direct kills (bash) must not leave ghosts counted as alive
   totalKills++;
   const fall = Math.random() < 0.5 ? -1 : 1;
   // 10% of deaths knock the headgear clean off (flies + lands with the rest) —
@@ -4822,7 +4918,8 @@ function unitFrame(u) {
     by += Math.sin(lp * Math.PI) * 1.8; F.by = by;
   }
   F.gunW = def.gunW; F.drawExtra = def.drawExtra;
-  const adx = Math.cos(u.aim), ady = Math.sin(u.aim);
+  F.df = dispFaction(u.faction); // faction bucket, computed once per frame for the batched hand sweeps below
+  const adx = moving ? Math.cos(u.aim) : mdx, ady = moving ? Math.sin(u.aim) : mdy; // idle: reuse the heading trig above (identical values, two fewer transcendentals per unit per frame)
   // recoil: the shot jolts the body back into the shoulder a touch
   const kick = (u.recoil || 0);
   if (kick > 0) { const jb = kick * 1.6; F.bx -= adx * jb; F.by -= ady * jb; }
@@ -4971,15 +5068,24 @@ function renderUnits(sorted) {
       ctx.restore();
     } else blit(set, F.bx, F.by);
   }
-  // wading waterline: the bottom quarter of a wader's head sits under the
-  // surface (one batched pass in the pond's own blue, before guns and
-  // glisten so rifles and shine stay dry above it; airborne rollers,
-  // shoreline-hoppers and vaults sit it out)
+  // wading waterline: a wader's head sits under the surface (one batched pass
+  // per depth in its own pond blue, before guns and glisten so rifles and
+  // shine stay dry above it; airborne rollers, shoreline-hoppers and vaults
+  // sit it out). Shallow covers the bottom quarter; deep swimmers ride twice
+  // as low, so it covers the bottom half (rx 0.87r matches the body's width
+  // at the midline, same as the shallow 0.77r at its own depth).
   ctx.fillStyle = "rgba(79,151,196,0.55)";
   ctx.beginPath();
   for (i = 0; i < sorted.length; i++) {
     u = sorted[i]; F = u._f; if (!F) continue;
-    if (u.inWater && !(u.rollT > 0) && !(u.wadeHopT > 0) && !(u.vaultT > 0)) { ctx.moveTo(F.bx + F.r * 0.77, F.by + F.r * 0.62); ctx.ellipse(F.bx, F.by + F.r * 0.62, F.r * 0.77, F.r * 0.38, 0, 0, 7); }
+    if (u.inWater && !u.inDeep && !(u.rollT > 0) && !(u.wadeHopT > 0) && !(u.vaultT > 0)) { ctx.moveTo(F.bx + F.r * 0.77, F.by + F.r * 0.62); ctx.ellipse(F.bx, F.by + F.r * 0.62, F.r * 0.77, F.r * 0.38, 0, 0, 7); }
+  }
+  ctx.fill();
+  ctx.fillStyle = "rgba(46,95,135,0.6)";
+  ctx.beginPath();
+  for (i = 0; i < sorted.length; i++) {
+    u = sorted[i]; F = u._f; if (!F) continue;
+    if (u.inWater && u.inDeep && !(u.rollT > 0) && !(u.wadeHopT > 0) && !(u.vaultT > 0)) { ctx.moveTo(F.bx + F.r * 0.87, F.by + F.r * 0.5); ctx.ellipse(F.bx, F.by + F.r * 0.5, F.r * 0.87, F.r * 0.5, 0, 0, 7); }
   }
   ctx.fill();
   // wet glisten: fresh-out waders shine for 5s (one batched white specular
@@ -5156,17 +5262,17 @@ function renderUnits(sorted) {
     ctx.fillStyle = A.armDark;
     ctx.beginPath();
     if (Q) {
-      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (dispFaction(u.faction) !== f) continue; F = u._f; ctx.rect(F.rx - 4.2, F.ry - 4.2, 8.4, 8.4); }
+      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (u._f.df !== f) continue; F = u._f; ctx.rect(F.rx - 4.2, F.ry - 4.2, 8.4, 8.4); }
     } else {
-      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (dispFaction(u.faction) !== f) continue; F = u._f; ctx.moveTo(F.rx + 4.6, F.ry); ctx.arc(F.rx, F.ry, 4.6, 0, 7); }
+      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (u._f.df !== f) continue; F = u._f; ctx.moveTo(F.rx + 4.6, F.ry); ctx.arc(F.rx, F.ry, 4.6, 0, 7); }
     }
     ctx.fill();
     ctx.fillStyle = A.armMid;
     ctx.beginPath();
     if (Q) {
-      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (dispFaction(u.faction) !== f) continue; F = u._f; ctx.rect(F.fx - 3.6, F.fy - 3.6, 7.2, 7.2); }
+      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (u._f.df !== f) continue; F = u._f; ctx.rect(F.fx - 3.6, F.fy - 3.6, 7.2, 7.2); }
     } else {
-      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (dispFaction(u.faction) !== f) continue; F = u._f; ctx.moveTo(F.fx + 4.0, F.fy); ctx.arc(F.fx, F.fy, 4.0, 0, 7); }
+      for (i = 0; i < sorted.length; i++) { u = sorted[i]; if (u._f.df !== f) continue; F = u._f; ctx.moveTo(F.fx + 4.0, F.fy); ctx.arc(F.fx, F.fy, 4.0, 0, 7); }
     }
     ctx.fill();
   }
@@ -5218,18 +5324,31 @@ function renderCorpses() {
       ctx.beginPath(); ctx.ellipse(c.px, c.py + 6, 14, 9, 0, 0, 7); ctx.fill();
       ctx.globalAlpha = 1;
     }
-    const fading = c.age > 25;
+    const wetC = inWaterAt(fgC, c.x, c.y);
+    const deepC = wetC && inDeepWaterAt(fgC, c.x, c.y); // deep-water dead sink instead of fading: half-submerged at first, fully under by 20s (spliced there — the land 25-30s fade below never runs for them)
+    const dk = deepC ? Math.min(1, c.age / 20) : 0;
+    const fading = !deepC && c.age > 25;
     const sp = c.img || (corpseSpr[dispFaction(c.faction)] || corpseSpr.red)[c.kind === "sniper" ? (c.hat ? 2 : 0) : (c.helmet ? 1 : 0)];
     if (!sp) continue;
-    if (fading) ctx.globalAlpha = Math.max(0, 1 - (c.age - 25) / 5); // body fades; its pool is long gone
-    if (c.img) blit(c.img, c.x, c.y); // pre-rotated at death: no transform
+    if (deepC) ctx.globalAlpha = Math.max(0, 1 - dk); // the descent doubles as the fade: gone exactly when the splice lands
+    else if (fading) ctx.globalAlpha = Math.max(0, 1 - (c.age - 25) / 5); // body fades; its pool is long gone
+    const sinkY = deepC ? dk * 8 : 0; // the body rides 8px down as it goes under
+    if (c.img) blit(c.img, c.x, c.y + sinkY); // pre-rotated at death: no transform
     else { // fallback (shouldn't happen): classic transform draw
-      const dx = Math.round(c.x * DPR) / DPR, dy = Math.round(c.y * DPR) / DPR;
+      const dx = Math.round(c.x * DPR) / DPR, dy = Math.round((c.y + sinkY) * DPR) / DPR;
       ctx.save(); ctx.translate(dx, dy); ctx.rotate(c.rot || 0);
       ctx.drawImage(sp.c, -sp.a, -sp.b, sp.w, sp.h);
       ctx.restore();
     }
-    if (fading) ctx.globalAlpha = 1;
+    if (deepC) { // drowning waterline: the deep pond's own dark blue, growing from the half cover (like live deep swimmers) to full as the body goes under; drawn under the sinking alpha above so it vanishes with the body
+      const f = 0.5 + 0.5 * dk;
+      ctx.fillStyle = "rgba(46,95,135,0.6)";
+      ctx.beginPath(); ctx.ellipse(c.x, c.y + sinkY + 13 * (1 - f), 13 * 0.87, 13 * f, 0, 0, 7); ctx.fill();
+    } else if (wetC) { // drowned waterline: like waders, the body's bottom quarter sits under the pond's own blue (r=13 is the baked corpse radius, same geometry as the live-unit pass); drawn under the fading alpha above so it fades with the body
+      ctx.fillStyle = "rgba(79,151,196,0.55)";
+      ctx.beginPath(); ctx.ellipse(c.x, c.y + 13 * 0.62, 13 * 0.77, 13 * 0.38, 0, 0, 7); ctx.fill();
+    }
+    if (deepC || fading) ctx.globalAlpha = 1;
   }
 }
 // Dying units: stagger back from the shot, then topple; the pool stays
@@ -5258,6 +5377,45 @@ function renderDying() {
     ctx.restore();
   }
 }
+// one particle's pixels (shared by the under/over canopy passes below): trails
+// cull by segment bbox so a trail reaching on-screen still draws, puffs cull
+// as points. Leaves ctx.globalAlpha at 1.
+function drawPart(p, ex0, ey0, ex1, ey1) {
+  // sniper vapor trails stretch from (p.x,p.y) to their bullet: cull by
+  // segment bbox so a trail reaching on-screen still draws. Puffs are points.
+  if (p.trail) {
+    let ptx, pty;
+    if (p.b && p.b.trail === p) { ptx = p.b.x; pty = p.b.y; }
+    else { ptx = p.x + Math.cos(p.ang) * p.len; pty = p.y + Math.sin(p.ang) * p.len; }
+    if ((p.x < ex0 || p.x > ex1 || p.y < ey0 || p.y > ey1) && (ptx < ex0 || ptx > ex1 || pty < ey0 || pty > ey1)) return;
+  } else if (p.x < ex0 || p.x > ex1 || p.y < ey0 || p.y > ey1) return;
+  ctx.globalAlpha = Math.max(0, p.life / p.max);
+  if (p.trail) { // focused sniper shot: a faint vapor line that grows with its bullet, fading fast
+    const ta = Math.max(0, p.life / p.max);
+    let tx, ty;
+    if (p.b && p.b.trail === p) { tx = p.b.x; ty = p.b.y; } // bullet still flying: trail extends with it
+    else { tx = p.x + Math.cos(p.ang) * p.len; ty = p.y + Math.sin(p.ang) * p.len; } // frozen where the bullet stopped
+    ctx.globalAlpha = ta * 0.16;
+    ctx.strokeStyle = "#e8f0e4"; ctx.lineWidth = 6; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.globalAlpha = ta * 0.45;
+    ctx.strokeStyle = "#f4f8ef"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(tx, ty); ctx.stroke();
+  } else if (p.flake) { // tumbling chip: spinning sliver (bark keeps its rect; concrete streakers set soft for a round one)
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot || 0);
+    if (p.soft) { ctx.fillStyle = p.c; ctx.beginPath(); ctx.ellipse(0, 0, p.s, p.s * 0.35, 0, 0, 7); ctx.fill(); }
+    else { ctx.fillStyle = p.c; ctx.fillRect(-p.s, -p.s * 0.5, p.s * 2, p.s); }
+    ctx.restore();
+  } else {
+    // soft round puffs via a color-keyed sprite cache: one blit per
+    // particle with no per-particle path cost (same speed class as the
+    // old squares), and smoke blooms into a soft dot instead of a box
+    const spr = dotSpr(p.c);
+    const d = p.s * 3.2;
+    ctx.drawImage(spr, p.x - d / 2, p.y - d / 2, d, d);
+  }
+  ctx.globalAlpha = 1;
+}
 function render() {
   drawGrass(); // grass tiles + all live holes inside
   renderBarkBits();
@@ -5285,6 +5443,11 @@ function render() {
     ctx.restore();
     ctx.globalAlpha = 1;
   }
+  // water spray rests on the surface: paint it with the other ground litter
+  // (before the canopies) so spray behind a tree reads as behind the wood,
+  // exactly like the wading waterline, the glisten, and the hats. Everything
+  // else (smoke, flashes, feedback poofs) stays above the leaves.
+  for (const p of parts) if (p.under) drawPart(p, ex0, ey0, ex1, ey1);
   renderTreeCanopies();
   // winner ring (ffa last-one-standing)
   if (mode === "ffa" && winner) {
@@ -5316,40 +5479,8 @@ function render() {
     ctx.fill();
   }
   for (const p of parts) {
-    // sniper vapor trails stretch from (p.x,p.y) to their bullet: cull by
-    // segment bbox so a trail reaching on-screen still draws. Puffs are points.
-    if (p.trail) {
-      let ptx, pty;
-      if (p.b && p.b.trail === p) { ptx = p.b.x; pty = p.b.y; }
-      else { ptx = p.x + Math.cos(p.ang) * p.len; pty = p.y + Math.sin(p.ang) * p.len; }
-      if ((p.x < ex0 || p.x > ex1 || p.y < ey0 || p.y > ey1) && (ptx < ex0 || ptx > ex1 || pty < ey0 || pty > ey1)) continue;
-    } else if (p.x < ex0 || p.x > ex1 || p.y < ey0 || p.y > ey1) continue;
-    ctx.globalAlpha = Math.max(0, p.life / p.max);
-    if (p.trail) { // focused sniper shot: a faint vapor line that grows with its bullet, fading fast
-      const ta = Math.max(0, p.life / p.max);
-      let tx, ty;
-      if (p.b && p.b.trail === p) { tx = p.b.x; ty = p.b.y; } // bullet still flying: trail extends with it
-      else { tx = p.x + Math.cos(p.ang) * p.len; ty = p.y + Math.sin(p.ang) * p.len; } // frozen where the bullet stopped
-      ctx.globalAlpha = ta * 0.16;
-      ctx.strokeStyle = "#e8f0e4"; ctx.lineWidth = 6; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(tx, ty); ctx.stroke();
-      ctx.globalAlpha = ta * 0.45;
-      ctx.strokeStyle = "#f4f8ef"; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(tx, ty); ctx.stroke();
-    } else if (p.flake) { // tumbling chip: spinning sliver (bark keeps its rect; concrete streakers set soft for a round one)
-      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot || 0);
-      if (p.soft) { ctx.fillStyle = p.c; ctx.beginPath(); ctx.ellipse(0, 0, p.s, p.s * 0.35, 0, 0, 7); ctx.fill(); }
-      else { ctx.fillStyle = p.c; ctx.fillRect(-p.s, -p.s * 0.5, p.s * 2, p.s); }
-      ctx.restore();
-    } else {
-      // soft round puffs via a color-keyed sprite cache: one blit per
-      // particle with no per-particle path cost (same speed class as the
-      // old squares), and smoke blooms into a soft dot instead of a box
-      const spr = dotSpr(p.c);
-      const d = p.s * 3.2;
-      ctx.drawImage(spr, p.x - d / 2, p.y - d / 2, d, d);
-    }
-    ctx.globalAlpha = 1;
+    if (p.under) continue; // painted before the canopies above
+    drawPart(p, ex0, ey0, ex1, ey1);
   }
   // placement ghost on the overlay canvas (own layer, so the cursor stays
   // smooth even when the world frame is heavy). Redrawn every world frame
@@ -5614,11 +5745,19 @@ function snapshotField() {
     cuts: floorCuts.map(c => ({ x: c.x, y: c.y, r: c.r, kind: c.kind })),
     spawners: spawners.map(s => ({ x: s.x, y: s.y, kind: s.kind, faction: s.faction, maxUnits: s.maxUnits, cd: s.cd, spawnR: s.spawnR })) };
 }
+let saveBusy = false; // overlapping autosaves (slow IDB vs the 2s tick) could land out of order and strand a stale snapshot — one flight at a time, the next tick retries
 async function saveFieldNow() {
   const st = kvFieldStore();
-  if (!st || !fieldSaveReady) return false;
-  try { await st.set(FIELD_SAVE_KEY, snapshotField()); lastSavedSig = fieldSig(); return true; }
+  if (!st || !fieldSaveReady || saveBusy) return false;
+  saveBusy = true;
+  // snapshot + sig are captured BEFORE the await: a paint landing mid-write
+  // must not be stamped as saved (the old code stamped fieldSig() after the
+  // write resolved, so edits made during a slow IDB write never persisted —
+  // the next tick saw sig == lastSavedSig and skipped). With the
+  // pre-write sig, those edits differ and flush on the next tick instead.
+  try { const snap = snapshotField(), snapSig = fieldSig(); await st.set(FIELD_SAVE_KEY, snap); lastSavedSig = snapSig; return true; }
   catch (_) { return false; }
+  finally { saveBusy = false; }
 }
 function forgetSavedField() { // restart path: the wiped field must persist as wiped
   try {
@@ -5628,8 +5767,23 @@ function forgetSavedField() { // restart path: the wiped field must persist as w
   lastSavedSig = fieldSig();
 }
 async function restoreField() {
+  // Live re-injection re-runs this whole script with the field intact (the
+  // const-redeclare errors prove it happens): a second entry must never wipe
+  // live terrain. Genuine boots run exactly once per window, so only the
+  // first call may apply the save; later calls just unlock the autosave.
+  if (window.__restoreDone) {
+    fieldSaveReady = true;
+    // ...but only a non-empty live field is protected: restoring over an
+    // empty field can lose nothing, so a later manual call with kv content
+    // still works (units never persist, so live battles are unaffected).
+    if (trees.length || floors.length || (floorCuts || []).length || spawners.length) return;
+  }
+  window.__restoreDone = true;
   // kv can resolve a beat after boot (plugin fetch) — retry briefly, then
   // boot empty and let the autosave take over from the live field instead.
+  const bootSig = fieldSig(); // boot-race guard below: edits made while kv
+  // resolves (fast planters, console, size menu) must survive, never be wiped
+  // by the stale save landing late — the live field wins, autosave persists it
   for (let a = 0; a < 10; a++) {
     const st = kvFieldStore();
     if (st) {
@@ -5637,6 +5791,8 @@ async function restoreField() {
       try { d = await st.get(FIELD_SAVE_KEY); } catch (_) { break; }
       if (d && (d.trees || d.floors || d.spawners || d.size)) {
         try {
+          if (fieldSig() !== bootSig) lastSavedSig = ""; // dirty since boot: keep the live field, force the autosave to persist it on the next tick (leaving lastSavedSig at the boot value would ALSO trigger a save — but "" matches the setFieldSize pattern and can never equal a real sig)
+          else {
           if (d.size && FIELD_SCALES[d.size]) fieldSize = d.size; // restore the saved field size first: resize() scales to it
           trees.length = 0; floors.length = 0; floorCuts.length = 0; spawners.length = 0;
           for (const s of (d.trees || [])) {
@@ -5670,6 +5826,7 @@ async function restoreField() {
           zoom = zoomMin(); clampCam();
           refreshBar();
           lastSavedSig = fieldSig();
+          } // end else (clean boot: apply the save)
         } catch (_) {}
       }
       break;
@@ -5691,6 +5848,12 @@ if (!window.__fieldSaveBound) {
 if (!window.__keyBound) {
   window.__keyBound = true;
   addEventListener("keydown", e => {
+    // typing in a control (spawner sliders, option checkboxes) must not
+    // wipe the field or toggle play — R with a slider focused used to clear
+    // the whole battle via trashReset (the WASD handler below already guards
+    // this way; space-on-BUTTON keeps its own carve-out underneath)
+    const tg = e.target && e.target.tagName;
+    if (tg === "INPUT" || tg === "TEXTAREA" || tg === "SELECT") return;
     if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) { trashReset(); }
     else if (e.key === " " && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
       // a focused native button already fires on space (its own click
@@ -5732,8 +5895,8 @@ if (!window.__keyBound2) {
 function demo() {
   // kept for console testing (spawn a quick two-army setup); the live
   // battlefield itself always starts empty — see clearField().
-  units = []; trees = []; floors = []; spawners = []; barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; dying = [];
-  bumpTrees(); bumpFloors();
+  units = []; trees = []; floors = []; floorCuts = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
+  bumpTrees(); bumpFloors(); clearFloorLayer();
   everMulti = false; totalKills = 0; winner = null;
   const rows = (f, x0, kinds) => {
     for (let i = 0; i < 12; i++) {
@@ -5779,7 +5942,7 @@ setInterval(() => {
     }
   } else { stallCount = 0; lastTickSeen = t; }
 }, 500);
-window.battleSim = { spawn, plantTree, plantBarr, plantFloor, placeSpawner, chipTree, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, floors: () => floors, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bgTiles: grassTiles.length, hole: holes.length, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); }, noteAttack, factionAlert: () => factionAlert, inWaterAt, splashAt, floorGridGet, floorBoostAt };
+window.battleSim = { spawn, plantTree, plantBarr, plantFloor, placeSpawner, chipTree, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, floors: () => floors, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bgTiles: grassTiles.length, hole: holes.length, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); }, noteAttack, factionAlert: () => factionAlert, inWaterAt, inDeepWaterAt, splashAt, floorGridGet, floorBoostAt };
 
 </script>
 </body>
