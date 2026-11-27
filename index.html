@@ -6,7 +6,7 @@
 <title>Big Tussle</title>
 </head>
 <body>
-<!-- portable standalone build of Big Tussle, generated 2026-11-26 from the editor index.html — self-contained, no engine needed -->
+<!-- portable standalone build of Big Tussle, generated 2026-11-27 from the editor index.html — self-contained, no engine needed -->
 <style>
   /* Dark-styled UI (bars/dock are near-black pills), so declare it: browsers
      with auto-dark / night-mode content features then leave our pixels alone
@@ -212,7 +212,7 @@
 
 <div id="topWrap"><div id="bar"></div></div>
 <div id="bbar"></div>
-<div id="ver">v0.0.8</div>
+<div id="ver">v0.0.9</div>
 <div id="fps">60</div>
 <canvas id="cv" tabindex="0"></canvas>
 <canvas id="ov"></canvas>
@@ -241,8 +241,8 @@
 "use strict";
 // GAME_VERSION is the single source of truth for the version tag (#ver,
 // top-left). It is bumped ONLY when the user explicitly says so — never
-// as part of any other change. (v0.0.4, v0.0.5, v0.0.6, v0.0.7, v0.0.8: bumped by explicit user order.)
-const GAME_VERSION = "v0.0.8";
+// as part of any other change. (v0.0.4, v0.0.5, v0.0.6, v0.0.7, v0.0.8, v0.0.9: bumped by explicit user order.)
+const GAME_VERSION = "v0.0.9";
 /* ============================================================
    BATTLE SIM — add a unit by adding one entry to UNIT_DEFS.
    Required fields: hp, speed, range, interval, damage, bulletSpeed,
@@ -253,6 +253,8 @@ const UNIT_DEFS = {
   gunner: { name:"gunner", hp:110, speed:76,  range:250, sight:420, interval:0.85, damage:34, bulletSpeed:560, radius:13, gunLen:20, gunW:5, spread:0.06, pellets:1, aimJitter:0.02, hold:0.7, mag:6, reload:1.6 },
   sniper:  { name:"sniper",  hp:75,  speed:66,  range:520, sight:720, interval:3.2,  damage:130, bulletSpeed:950, radius:13, gunLen:36, gunW:3, spread:0.008,pellets:1, aimJitter:0.002, hold:1.0, mag:1, reload:3.6 },
 };
+// Wooden walls are flimsy: 1000hp (~30 gunner shots; sniper rounds count their own damage)
+const WOOD_HP = 1000;
 
 const FACTIONS = {
   red:    "#e74c3c",
@@ -270,7 +272,7 @@ const UNIT_CATS = {
   soldiers:   { label: "Soldiers",   tab: "soldiers", variants: ["gunner"] },
   snipers:    { label: "Snipers",    tab: "soldiers", variants: ["sniper"] },
   trees:      { label: "Trees",      tab: "objects",  variants: ["tree"] },
-  barricades: { label: "Barricades", tab: "objects",  variants: ["barricade"] },
+  barricades: { label: "Barricades", tab: "objects",  variants: ["barricade", "woodbarr"] },
   waters:     { label: "Water",      tab: "flooring", variants: ["water", "deepwater"] },
 };
 // unit info window copy (Description for every brush, Stats where listed,
@@ -286,6 +288,8 @@ const UNIT_INFO = {
                stats: [{ k: "Health", v: 300 }] },
   barricade: { name: "Barricade", desc: "A concrete barricade. Makes for good cover.",
                stats: [{ k: "Health", v: 500 }] },
+  woodbarr:  { name: "Wooden Barricade", desc: "A flimsy wooden barricade vulnerable to bullets.",
+               stats: [{ k: "Health", v: WOOD_HP }] },
   dirt:      { name: "Dirt Path", desc: "Simple path of packed dirt. Units walk 1.10x faster on it.",
                stats: [{ k: "Unit Movespeed", v: "1.10x" }] },
   concrete:  { name: "Concrete", desc: "An effective industrial flooring. Units walk 1.25x faster on it.",
@@ -518,7 +522,7 @@ function attachInput() {
     // picked (placed walls can't be rotated); the dirt brush resizes on
     // the wheel instead. Anything else zooms around the cursor as before.
     const wd = (e.deltaMode ? e.deltaY * 16 : e.deltaY) || 0; // lines -> px
-    if (brush.unit === "barricade") {
+    if (barrBrush()) {
       pendingBarrDir = ((((pendingBarrDir | 0) + (wd < 0 ? -1 : 1)) % 8) + 8) % 8;
       queueGhost();
       return;
@@ -529,8 +533,8 @@ function attachInput() {
       queueGhost();
       return;
     }
-    const d = wd;
-    zoomAt(evPos(e).x, evPos(e).y, Math.exp(-d * 0.0015));
+    const wp = evPos(e); // one rect read for both axes (getBoundingClientRect forces layout)
+    zoomAt(wp.x, wp.y, Math.exp(-wd * 0.0015));
     queueGhost();
   }, { passive: false });
   if (!window.__upBound) {
@@ -562,13 +566,17 @@ let shotsFired = 0, fleshHits = 0; // lifetime diagnostic counters for probes an
 let uid = 1;
 let brush = { unit:"gunner", tab:"soldiers", faction:"red", eraser:false, spawner:false }; // spawner: placement mode that drops a unit-spawner (kind/faction captured from the selection); never offered for trees
 let lastGunnerUnit = "gunner"; // soldiers-tab pick remembered across trips to Objects (so placing a wall never resets sniper -> gunner)
-let trees = []; // static objects: trees {x,y,r,seed,chip,scars[]} and concrete barricades {kind:"barr",x,y,dir} — bullets chip bark / chip concrete, nothing ever falls
+let trees = []; // static objects: trees {x,y,r,seed,chip,scars[]}, concrete barricades {kind:"barr",x,y,dir} and wooden barricades {kind:"barr",wood:true,x,y,dir,hp} — bullets chip bark / chip concrete, but only wood takes damage and falls (leaving rubble, below)
 const TREE_R = 45, TRUNK_R = 14, MAX_TREES = 400;
 const TREE_HP = 300; // dormant health (no destruction yet — reserved for future use)
 const BARR_HALF = 24, BARR_HW = 8; // barricade: a 48-long, 16-thick concrete jersey wall, angled in 8 directions at placement
 let barkBits = []; // fallen bark chips on the ground (fade after 10s)
 let leafBits = []; // fallen leaves shaken out of the canopy (fade after 10s)
 let concBits = []; // concrete chips around barricade bases (fade after 10s)
+let woodBits = []; // splinters scattered when a wooden wall falls (fade after 10s)
+let rubble = []; // felled wooden barricades {x,y,dir}: small plank heaps that never despawn (cleared by restart/clear/demo, restored to walls by trash)
+let wrecks = []; // collapsing-wood animations {x,y,dir,seed,age,life}: the wall breaking apart over ~0.5s (transient like parts — never saved, wiped by clear/trash/demo)
+function barrBrush() { return brush.unit === "barricade" || brush.unit === "woodbarr"; } // either wall brush: the wheel spins the ghost, caps warn, water refuses — both plant kind:"barr" walls
 let pendingBarrDir = 0; // placement direction for the next barricade (wheel spins the ghost)
 let spawners = [], spawnerId = 1, selSp = null; // placed unit-spawners: per-spawner kind/faction/cap/cooldown
 let spV = 0; // spawner-settings version: the sliders (cap/cooldown/ring) change no count, so they bump this to dirty the autosave signature
@@ -584,7 +592,7 @@ let pathSteer = true; // the advance path drift below (false = A/B baseline)
 // (0.62*1.25=0.78 < 0.8), so ±0.9 headings were dead weight. ±0.65
 // (cos 0.80) still reaches concrete lying abeam of the march, without ever
 // outscoring open grass straight (0.80*1.25=0.995 < 1.0).
-const PATH_ANGLES = [-0.65, -0.45, 0, 0.45, 0.65];
+const PATH_DIRS = [-0.65, -0.45, 0, 0.45, 0.65].map(ang => ({ ca: Math.cos(ang), sa: Math.sin(ang) }));
 const SPEEDS = [0.25, 0.5, 1, 2, 4]; // back/forward arrows step through these
 let speedIdx = 2;
 let simT = 0; // game-time clock (s): advances inside step(), so pause/speed scale it
@@ -632,16 +640,18 @@ let unitBtns = {}, dotBtns = {}, tallyEls = {}, playBtn, modeBtn, optBtn, speedB
 let catBtns = {}, bcatPop = null, catOpen = null, lastCatShown = null, catLast = {}; // variant-submenu state: open category + last-picked variant per category (clicking a category reselects its variant)
 let uinfo = null, uiOpen = false, uiTab = "desc", uiKey = "", uiImgKey = ""; // unit info window state (closed by default; the dock "i" toggle reopens it)
 // options window state (gear in the top bar; subtabs so more pages plug in later)
-const OPT_TABS = [["ui", "UI"]]; // [id, label] per subtab
-let optOpen = false, optTab = "ui", showFps = true, showVer = true; // fps counter + version tag both on by default
+const OPT_TABS = [["ui", "UI"], ["gameplay", "Gameplay"]]; // [id, label] per subtab
+let optOpen = false, optTab = "ui", showFps = true, showVer = true, clearSpawners = true; // fps counter + version tag + spawner-clearing all on by default
 // refreshBar runs 3x/sec as a heartbeat — only touch the DOM when a value
 // actually changed, so the blurred top bar never repaints for no reason
 let _barCache = null;
 function barCache() {
-  if (!_barCache) _barCache = { mode: "", play: null, speed: 0, counts: {}, win: {}, cap: {} };
+  if (!_barCache) _barCache = { mode: "", play: null, speed: 0, clearSp: null, counts: {}, win: {}, cap: {} };
   return _barCache;
 }
 let btabSold = null, btabObj = null, btabFloor = null, btabBtns = {};
+// trash-button handle: its tooltip names what the clear wipes, so it follows the Gameplay option
+let trashBtn = null;
 // field-size dropdown state (top-bar expand icon next to the trash button)
 let sizeOpen = false, sizeBtn = null, sizeMenu = null, sizeOptBtns = {};
 function setFieldSize(k) { // picking a size closes the menu and restarts the field at the new scale
@@ -693,10 +703,10 @@ function drawUiPreview() { // exact sprite image of the picked brush (the same a
     const cx = 62, cy = 71;
     if (treeBaseSpr) g.drawImage(treeBaseSpr.c, cx + TBB_X, cy + TBB_Y, TBB_W, TBB_H);
     if (treeCanSpr[12]) g.drawImage(treeCanSpr[12], cx + TBC_X, cy + TBC_Y, TBC_W, TBC_H);
-  } else if (key === "barricade") {
-    if (!barrSprs.length) { try { buildBarrSprites(); } catch (_) {} }
+  } else if (key === "barricade" || key === "woodbarr") {
+    if (key === "woodbarr" ? !woodSprs.length : !barrSprs.length) { try { if (key === "woodbarr") buildWoodSprites(); else buildBarrSprites(); } catch (_) {} }
     pc.width = 116; pc.height = 92; g.lineCap = "butt";
-    const bs = barrSprs[barrDir({ dir: pendingBarrDir })];
+    const bs = (key === "woodbarr" ? woodSprs : barrSprs)[barrDir({ dir: pendingBarrDir })];
     if (bs) g.drawImage(bs.c, 58 - bs.w / 2, 46 - bs.h / 2, bs.w, bs.h);
   } else if (FLOOR_DEFS[key]) {
     pc.width = 116; pc.height = 92; g.lineCap = "butt";
@@ -837,7 +847,8 @@ function buildBar() {
   playBtn = btn(ICONS.pause, "pause / resume", () => togglePlay());
   bar.appendChild(playBtn);
   bar.appendChild(btn(ICONS.restart, "restart (clears units, terrain, everything)", () => restart()));
-  bar.appendChild(btn(ICONS.trash, "clear units + spawners, keep terrain (R)", () => trashReset()));
+  trashBtn = btn(ICONS.trash, "clear units + spawners, keep terrain (R)", () => trashReset());
+  bar.appendChild(trashBtn);
   // field-size picker: expand icon next to the trash opens Small/Medium/Large below the bar
   sizeBtn = btn(ICONS.fieldsize, "field size (changing it restarts the field)", () => { sizeOpen = !sizeOpen; });
   bar.appendChild(sizeBtn);
@@ -918,7 +929,7 @@ function refreshBar() {
     }
     // preview image: same sprites the field renders; redraws on brush,
     // faction, FFA look, or barricade ghost direction — text above is separate
-    const imgKey = uk + "|" + (mode === "ffa" ? "ffa" : brush.faction) + "|" + (uk === "barricade" ? barrDir({ dir: pendingBarrDir }) : "");
+    const imgKey = uk + "|" + (mode === "ffa" ? "ffa" : brush.faction) + "|" + ((uk === "barricade" || uk === "woodbarr") ? barrDir({ dir: pendingBarrDir }) : "");
     if (vis && imgKey !== uiImgKey) { uiImgKey = imgKey; drawUiPreview(); }
   }
   if (spTabBtn) {
@@ -959,6 +970,7 @@ function refreshBar() {
   if (bc.showVer !== showVer) { bc.showVer = showVer; const ve = document.getElementById("ver"); if (ve) ve.style.display = showVer ? "" : "none"; }  if (bc.mode !== mode) { modeBtn.innerHTML = mode === "ffa" ? ICONS.ffa : ICONS.teams; bc.mode = mode; }
   if (bc.play !== playing) { playBtn.innerHTML = playing ? ICONS.pause : ICONS.play; bc.play = playing; }
   if (bc.speed !== speed) { speedLabelBtn.innerHTML = `<span style="font-weight:800;font-size:13px;">${speed}×</span>`; bc.speed = speed; }
+  if (bc.clearSp !== clearSpawners) { bc.clearSp = clearSpawners; if (trashBtn) trashBtn.title = clearSpawners ? "clear units + spawners, keep terrain (R)" : "clear units, keep terrain + spawners (R)"; }
   const counts = countAlive();
   const aliveN = counts.red + counts.blue + counts.yellow + counts.purple;
   if (aliveN > 256) lodSimple = true; else if (aliveN < 192) lodSimple = false;
@@ -1284,9 +1296,12 @@ function drawGrass() {
 // churn needs no bake at all).
 let lastZoomT = 0; // last time zoom actually changed (zoomAt/resize stamp it)
 function zoomSettled() { return performance.now() - lastZoomT > 350; } // true once the gesture is over (smooth resampling only on settled frames)
+let lastPanT = 0; // last frame the camera actually moved (stamped in the loop below)
+function panSettled() { return performance.now() - lastPanT > 350; } // panning is a gesture too: while the view moves, blits take the fast nearest path, exactly like mid-zoom
+function smoothOK() { return zoomSettled() && panSettled(); } // full-quality resampling only on settled frames (resting view, identical to before)
 function groundLayers() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = zoomSettled(); // settled frames resample smooth; mid-gesture frames take the fast nearest path
+  ctx.imageSmoothingEnabled = smoothOK(); // settled frames resample smooth; mid-gesture frames take the fast nearest path
   const s = DPR * zoom;
   if (bgCv) {
     const wx0 = Math.max(0, cam.x), wy0 = Math.max(0, cam.y);
@@ -1498,6 +1513,29 @@ function eraseTreeAt(x, y) { // objects-eraser: closest tree by canopy center, c
     }
     if (dd < bd) { bd = dd; best = i; }
   }
+  // felled-wood heaps erase with the Barricades category too — nearest pick
+  // wins against a live wall or trunk, so clearing a heap never eats its
+  // neighbor (and a heap beside a wall doesn't shield the wall forever)
+  if (allow.includes("barricade")) {
+    let br = -1, bdd = 26;
+    for (let i = 0; i < rubble.length; i++) {
+      const dx = rubble[i].x - x, dy = rubble[i].y - y;
+      const dd = Math.sqrt(dx * dx + dy * dy);
+      if (dd < bdd) { bdd = dd; br = i; }
+    }
+    if (br >= 0 && (best < 0 || bdd <= bd)) {
+      const r = rubble[br];
+      poof(r.x, r.y, "#8a6136", 8);
+      rubble.splice(br, 1);
+      for (let i = woodBits.length - 1; i >= 0; i--) {
+        const bdx = woodBits[i].x - r.x, bdy = woodBits[i].y - r.y;
+        if (bdx * bdx + bdy * bdy < 75 * 75) woodBits.splice(i, 1);
+      }
+      bumpTrees(); // heaps ride the autosave sig through treesV, so the erase persists
+      refreshBar();
+      return true;
+    }
+  }
   if (best < 0) return false;
   const t = trees[best];
   poof(t.x, t.y, "#7a5a36", 10);
@@ -1511,6 +1549,10 @@ function eraseTreeAt(x, y) { // objects-eraser: closest tree by canopy center, c
     for (let i = concBits.length - 1; i >= 0; i--) {
       const bdx = concBits[i].x - t.x, bdy = concBits[i].y - t.y;
       if (bdx * bdx + bdy * bdy < 75 * 75) concBits.splice(i, 1);
+    }
+    for (let i = woodBits.length - 1; i >= 0; i--) {
+      const bdx = woodBits[i].x - t.x, bdy = woodBits[i].y - t.y;
+      if (bdx * bdx + bdy * bdy < 75 * 75) woodBits.splice(i, 1);
     }
   } else {
     for (let i = barkBits.length - 1; i >= 0; i--) {
@@ -1682,8 +1724,11 @@ function renderOptBody() { // per-subtab options content (more subtabs plug in h
   if (!body) return;
   if (optTab === "ui") {
     body.innerHTML = `<label class="optRow"><input id="optFps" type="checkbox"${showFps ? " checked" : ""}><span>FPS counter</span></label><div class="optDesc">Enable or disable the frames-per-second counter in the right corner of the screen.</div><label class="optRow"><input id="optVer" type="checkbox"${showVer ? " checked" : ""}><span>Version number</span></label><div class="optDesc">Disable the display of the game's current version in the left corner.</div>`;
-    document.getElementById("optFps").addEventListener("change", e => { showFps = !!e.target.checked; refreshBar(); });
-    document.getElementById("optVer").addEventListener("change", e => { showVer = !!e.target.checked; refreshBar(); });
+    document.getElementById("optFps").addEventListener("change", e => { showFps = !!e.target.checked; saveOptionsNow(); refreshBar(); });
+    document.getElementById("optVer").addEventListener("change", e => { showVer = !!e.target.checked; saveOptionsNow(); refreshBar(); });
+  } else if (optTab === "gameplay") {
+    body.innerHTML = `<label class="optRow"><input id="optClearSp" type="checkbox"${clearSpawners ? " checked" : ""}><span>Remove Spawners on Clear</span></label><div class="optDesc">Whether spawners are kept upon clearing (not restarting) the field.</div>`;
+    document.getElementById("optClearSp").addEventListener("change", e => { clearSpawners = !!e.target.checked; saveOptionsNow(); refreshBar(); });
   } else body.innerHTML = "";
 }
 function buildOptwin() { // wire the options window once (close button + subtab row)
@@ -1743,8 +1788,10 @@ function ejectBarr(x, y, clear) {
       x = qx + pdx / pl * clear; y = qy + pdy / pl * clear;
     }
   }
-  return [x, y];
+  _ejectOut[0] = x; _ejectOut[1] = y;
+  return _ejectOut;
 }
+const _ejectOut = [0, 0];
 function barrSeg(t) { // wall endpoints around the barrier center
   // baked at placement (sx1.., _seg) — old saves and script-pushed walls
   // fill the cache lazily on first use, same values either way.
@@ -1782,6 +1829,13 @@ function segDist(px, py, x1, y1, x2, y2) { // distance from a point to a segment
 // endpoint/midpoint sampling missed grazes past a wall's end — a lane
 // slipping 3px outside the end cap still eats concrete (capsule radius 10).
 function segSegDist(ax, ay, bx, by, cx, cy, dx, dy) {
+  // cheap AABB rejection: boxes that stay apart by more than 32px mean the
+  // exact segment distance is above 32 as well, well past every caller's hit
+  // threshold (BARR_HW + 2 spacing, BARR_HW + radius + 2 retreat slide) — so
+  // the four point-to-segment tails below (and their sqrts) are skipped
+  const gx = Math.max(0, Math.max(Math.min(ax, bx) - Math.max(cx, dx), Math.min(cx, dx) - Math.max(ax, bx)));
+  const gy = Math.max(0, Math.max(Math.min(ay, by) - Math.max(cy, dy), Math.min(cy, dy) - Math.max(ay, by)));
+  if (gx > 32 || gy > 32) return gx > gy ? gx : gy; // axis gap is a valid lower bound on the real distance
   const d = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx);
   if (d !== 0) {
     const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / d;
@@ -1796,8 +1850,9 @@ function barrShield(u, t) { // true while the wall crosses the unit->threat firi
   const tx = u.tx.x - u.x, ty = u.tx.y - u.y;
   const shL = Math.max(1, Math.sqrt(tx * tx + ty * ty));
   const s = barrSeg(t);
-  const pts = [[(s[0] + s[2]) / 2, (s[1] + s[3]) / 2], [s[0], s[1]], [s[2], s[3]]];
-  for (const [qx, qy] of pts) {
+  const qxs = [(s[0] + s[2]) / 2, s[0], s[2]], qys = [(s[1] + s[3]) / 2, s[1], s[3]];
+  for (let qi = 0; qi < 3; qi++) {
+    const qx = qxs[qi], qy = qys[qi];
     const rx = qx - u.x, ry = qy - u.y;
     const a = (rx * tx + ry * ty) / shL;
     if (a < 0 || a > shL) continue;
@@ -1826,12 +1881,12 @@ function barrBetween(ct, u, b) {
   return true;
 }
 const BARR_MAX = 600; // barricade cap is 1.5x trees: walls are the cheap cover spam
-const BARR_HP = 500; // dormant health (no destruction yet — reserved for future use)
-function plantBarr(x, y) {
+const BARR_HP = 500; // concrete health (immune — nothing damages it, reserved for future use)
+function plantBarr(x, y, wood) {
   { let nb = 0; for (const t of trees) if (t.kind === "barr" && ++nb >= BARR_MAX) return null; }
   x = Math.max(BARR_HALF, Math.min(FW - BARR_HALF, x));
   y = Math.max(BARR_HALF, Math.min(FH - BARR_HALF, y));
-  if (inWaterAt(floorGridGet(), x, y)) return null; // concrete needs dry footing — walls can't stand in shallow water (islands read dry, so causeways still chain)
+  if (inWaterAt(floorGridGet(), x, y)) return null; // walls need dry footing — neither concrete nor wood stands in shallow water (islands read dry, so causeways still chain)
   // barricades chain into walls, so they plant closer than trees — but never
   // stacked on a trunk or each other
   for (const t of trees) {
@@ -1844,8 +1899,8 @@ function plantBarr(x, y) {
   }
   for (const u of units) { const dx = u.x - x, dy = u.y - y, m = BARR_HALF + 13; if (dx*dx + dy*dy < m * m) return null; }
   // ... plus an exact segment check end-on: the center test passes with a
-  // unit standing past the wall's end but still inside the concrete capsule
-  // (center 37px vs end cap at 24px + body). Nobody plants concrete under
+  // unit standing past the wall's end but still inside the wall capsule
+  // (center 37px vs end cap at 24px + body). Nobody plants a wall under
   // flesh — units can never start a life standing on a barricade.
   // Segment endpoints are baked onto the wall at placement (the only cos/sin
   // this wall ever costs) — every per-step scan reads the cache instead.
@@ -1857,7 +1912,8 @@ function plantBarr(x, y) {
   }
   for (const s of spawners) { const dx = s.x - x, dy = s.y - y, m = BARR_HALF + SP_R; if (dx*dx + dy*dy < m * m) return null; }
   const t = { kind: "barr", x, y, r: BARR_HALF, dir: pendingBarrDir | 0, seq: treeSeq++,
-    hp: BARR_HP, maxHp: BARR_HP, // dormant (nothing damages or destroys cover yet)
+    wood: wood ? true : undefined, // wooden walls take bullet damage and fall; concrete stays immune
+    hp: wood ? WOOD_HP : BARR_HP, maxHp: wood ? WOOD_HP : BARR_HP, // wood: 1000hp (~30 gunner shots); concrete: dormant (nothing damages it yet)
     sx1: x - pex, sy1: y - pey, sx2: x + pex, sy2: y + pey, sax: pex / pnl, say: pey / pnl,
     _seg: [x - pex, y - pey, x + pex, y + pey] };
   trees.push(t); bumpTrees(); return t;
@@ -2197,6 +2253,7 @@ function eraseFloorsAt(x, y) { // flooring-eraser stroke sample: throttled sweep
 // gray dust puff + concrete chips that settle at the base (5s). Sniper rounds
 // hit harder and throw a bigger fan.
 function chipBarr(t, x, y, b) {
+  if (t.wood) return chipWood(t, x, y, b); // wooden walls take the hit: splinters + damage, never sparks
   const ba = b ? Math.atan2(b.vy, b.vx) : 0; // shot's travel direction
   const big = (b && (b.kind === "sniper" || (b.dmg || 0) > 50)) ? 1.4 : 1; // heavy rounds throw more
   // contact flash: white-hot core + faint warm halo, gone in a blink. Kept
@@ -2239,9 +2296,94 @@ function chipBarr(t, x, y, b) {
   }
   if (concBits.length > 300) concBits.splice(0, concBits.length - 300);
 }
-// Gunshots only chip bark (trees) or concrete (barricades): scars + wood
-// chips for trees, a little gray debris for barricades — never damage.
-// Nothing falls. Barricades never shake.
+// Wooden impact: the wall shows the hit instead of shrugging it off — a soft
+// amber contact flash (never white-hot), a fan of brown splinters arcing back
+// toward the shooter, and a couple of tumbling slivers. Every stopped round
+// also chews the wall by its damage (sniper rounds count their own damage),
+// so ~30 gunner shots fell it. Sniper rounds throw a bigger fan.
+function chipWood(t, x, y, b) {
+  const ba = b ? Math.atan2(b.vy, b.vx) : 0; // shot's travel direction
+  const mag = (b && (b.kind === "sniper" || (b.dmg || 0) > 50)) ? 1.4 : 1; // heavy rounds throw more
+  // amber contact flash: warm wood-tone core + faint glow, gone in a blink
+  parts.push({ x, y, vx: 0, vy: -8, life: 0.08, max: 0.08, c: "#ffdf9e", s: 2.4 * mag });
+  parts.push({ x, y, vx: 0, vy: -5, life: 0.14, max: 0.14, c: "rgba(210,150,80,0.35)", s: 4.6 * mag });
+  // splinter fan: biased back toward the shooter, shorter and lazier than the
+  // concrete spark fan — wood absorbs the shot instead of ringing with it
+  const fan = ba + Math.PI;
+  const nSpl = Math.round(7 * mag);
+  const cols = ["#c89a62", "#a87c48", "#8a6136", "#d9b078"];
+  for (let i = 0; i < nSpl; i++) {
+    const a = fan + (Math.random() - 0.5) * 2.2;
+    const sp = (90 + Math.random() * 180) * mag;
+    const life = 0.25 + Math.random() * 0.2;
+    parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 50,
+                 life, max: life, g: 600, c: cols[(Math.random() * cols.length) | 0], s: 1.3 + Math.random() * 0.9 });
+  }
+  // slivers: a couple of tumbling planks that outrun the fan
+  const nSliv = Math.round(2 * mag);
+  for (let i = 0; i < nSliv; i++) {
+    const a = fan + (Math.random() - 0.5) * 1.6;
+    const sp = (260 + Math.random() * 200) * mag;
+    const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp - 50;
+    const life = 0.3 + Math.random() * 0.2;
+    parts.push({ x, y, vx, vy, life, max: life, g: 700, flake: true, soft: true,
+                 rot: Math.atan2(vy, vx), vr: (Math.random() - 0.5) * 10,
+                 c: Math.random() < 0.5 ? "#b08a5a" : "#8a6136", s: 2.2 + Math.random() * 1.2 });
+  }
+  // the hit lands: chew the wall by the round's damage, fell it at zero
+  t.hp -= (b && b.dmg) || 30;
+  if (t.hp <= 0) destroyWood(t, b);
+}
+// A wooden wall fails: unlink every live AI reference (same cleanup as an
+// eraser delete), drop it from the field, and leave a small plank heap that
+// never despawns. Cover grids rebuild off the treesV bump.
+function destroyWood(t, b) {
+  const i = trees.indexOf(t);
+  if (i < 0) return; // already gone (double-hit same tick)
+  unlinkTreeRefs(t);
+  trees.splice(i, 1);
+  bumpTrees();
+  rubble.push({ x: t.x, y: t.y, dir: t.dir | 0 });
+  // collapse animation: three big plank chunks + a dust ring play out over
+  // ~0.5s above the fresh heap, then the heap is all that remains
+  wrecks.push({ x: t.x, y: t.y, dir: t.dir | 0, seed: (Math.abs(t.x * 5 + t.y * 11) | 0) + 7, age: 0, life: 0.5 });
+  // collapse burst: the wall comes apart into a brown cloud + tumbling planks
+  const bx = t.x, by = t.y;
+  parts.push({ x: bx, y: by, vx: 0, vy: -20, life: 0.3, max: 0.3, c: "rgba(160,120,70,0.5)", s: 9 });
+  for (let k = 0; k < 12; k++) {
+    const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 160;
+    parts.push({ x: bx + (Math.random()*20-10), y: by + (Math.random()*12-6),
+                 vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 80,
+                 life: 0.4 + Math.random() * 0.3, max: 0.7, g: 650,
+                 c: ["#c89a62", "#a87c48", "#8a6136", "#6f4e2c"][(Math.random() * 4) | 0],
+                 s: 1.6 + Math.random() * 1.4 });
+  }
+  for (let k = 0; k < 4; k++) {
+    const a = Math.random() * Math.PI * 2, sp = 120 + Math.random() * 200;
+    const vx = Math.cos(a) * sp, vy = Math.sin(a) * sp - 60;
+    parts.push({ x: bx, y: by, vx, vy, life: 0.5 + Math.random() * 0.3, max: 0.8, g: 700,
+                 flake: true, soft: true, rot: Math.atan2(vy, vx), vr: (Math.random() - 0.5) * 14,
+                 c: "#9a7048", s: 3 + Math.random() * 2 });
+  }
+  // scattered splinters: small wood chips kicked out onto the nearby ground
+  // when the wall comes down — they settle around the wreck and dissipate
+  // after 10s (transient ground litter, like bark chips around trunks)
+  for (let k = 0; k < 12; k++) {
+    const a = Math.random() * Math.PI * 2;
+    woodBits.push({ x: bx + (Math.random()*20-10), y: by - 4,
+                    vx: Math.cos(a) * (40 + Math.random() * 130),
+                    vy: -60 - Math.random() * 150,
+                    gy: by + 10 + (Math.random() - 0.35) * 55,
+                    rot: Math.random() * Math.PI * 2, vr: (Math.random() - 0.5) * 18,
+                    s: 1.5 + Math.random() * 1.8, age: 0, falling: true,
+                    c: ["#9a7048", "#b58a58", "#8a6136", "#6f4e2e"][(Math.random() * 4) | 0] });
+  }
+  if (woodBits.length > 300) woodBits.splice(0, woodBits.length - 300);
+}
+// Gunshots chip bark (trees) or concrete (barricades) — scars + wood chips
+// for trees, a little gray debris for concrete — neither takes damage.
+// Wooden barricades are the exception: every stopped round chews them until
+// they fall (see chipWood). Nothing else falls. Barricades never shake.
 function chipTree(t, x, y, b) {
   if (t && t.kind === "barr") return chipBarr(t, x, y, b);
   t.chip = Math.min(1, (t.chip || 0) + 0.05 + ((b && b.dmg) || 30) / 1200);
@@ -2319,8 +2461,8 @@ function noteAttack(v, ax, ay) { // a hit on v hints where the enemy is: nearby 
 let stepTick = 0; // per-step counter (throttles/staggers periodic scans)
 // unit-grid key fns (module scope: step() used to reallocate both closures every tick)
 const UGS = 48;
-const ugk = (x, y) => { const cx = (((x / UGS) | 0) + 128), cy = (((y / UGS) | 0) + 128); return cx * 2048 + cy; };
-const ugk3 = (ix, iy) => ((ix + 128) * 2048 + (iy + 128));
+const ugk = (x, y) => { const cx = (((x / UGS) | 0) + 128), cy = (((y / UGS) | 0) + 128); return (cx << 11) | cy; };
+const ugk3 = (ix, iy) => (((ix + 128) << 11) | (iy + 128));
 // baked rotated-corpse cache: touchdown rotation is always exactly +/-PI/2,
 // so per-death canvas bakes collapse into at most (5 factions x 3 kinds x 2)
 // shared images, baked once on first use — identical pixels, no per-kill alloc
@@ -2608,8 +2750,8 @@ function renderBarkBits() {
     if (b.age <= 8) continue;
     ctx.globalAlpha = Math.max(0, 1 - (b.age - 8) / 2);
     ctx.fillRect(b.x - b.s, b.y - b.s * 0.6, b.s * 2, b.s * 1.2);
-  }
-  ctx.globalAlpha = 1;
+    ctx.globalAlpha = 1;
+    }
 }
 function renderLeafBits() {
   // shaken-out leaves: same 10s linger as bark (fade over the last 2s).
@@ -2656,6 +2798,25 @@ function renderConcBits() {
   }
   ctx.globalAlpha = 1;
 }
+function renderWoodBits() {
+  // splinters scattered by a falling wooden wall: same 10s linger as bark
+  // (fade over the last 2s). Per-bit browns, drawn individually — a few
+  // hundred at most, still cheap (same cost class as the leaf pass).
+  const vx0 = cam.x - 30, vy0 = cam.y - 30, vx1 = cam.x + W / zoom + 30, vy1 = cam.y + H / zoom + 30;
+  for (const b of woodBits) {
+    if (b.x < vx0 || b.x > vx1 || b.y < vy0 || b.y > vy1) continue;
+    if (b.age > 8) ctx.globalAlpha = Math.max(0, 1 - (b.age - 8) / 2);
+    ctx.fillStyle = b.c || "#8a6136";
+    if (b.falling) {
+      ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.rot || 0);
+      ctx.fillRect(-b.s, -b.s * 0.4, b.s * 2, b.s * 0.8);
+      ctx.restore();
+    } else {
+      ctx.fillRect(b.x - b.s, b.y - b.s * 0.4, b.s * 2, b.s * 0.8);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
 // Tree art is baked once into shared sprites (same pattern as the unit
 // sprites in buildSprites): per-frame vector arcs cost ~7us/tree and scale
 // linearly, so big forests stutter every frame and any motion (zoom/pan)
@@ -2675,6 +2836,7 @@ const BARR_COS = [], BARR_SIN = [];
 for (let d = 0; d < 8; d++) { BARR_COS.push(Math.cos(d * Math.PI / 4)); BARR_SIN.push(Math.sin(d * Math.PI / 4)); }
 function barrDir(t) { return ((((t.dir || 0) % 8) + 8) % 8); }
 let barrSprs = [];
+let woodSprs = []; // wooden barricade bodies, same 8-direction bake as concrete
 function buildBarrSprites() {
   if (barrSprs.length === 8) return; // direction-baked: DPR-independent, build once, never invalidated
   barrSprs = [];
@@ -2705,6 +2867,180 @@ function buildBarrSprites() {
     g.fillRect(-BARR_HALF / 3 - 1, -BARR_HW, 2, BARR_HW * 2); g.fillRect(BARR_HALF / 3 - 1, -BARR_HW, 2, BARR_HW * 2);
     barrSprs.push({ c, w: ex * 2, h: ey * 2 });
   }
+}
+function buildWoodSprites() {
+  if (woodSprs.length === 8) return; // direction-baked: DPR-independent, build once, never invalidated
+  woodSprs = [];
+  const SS = 2; // same 2x bake as the concrete bodies
+  for (let d = 0; d < 8; d++) {
+    const a = d * Math.PI / 4, ca = Math.cos(a), sa = Math.sin(a);
+    const ex = (BARR_HALF + 2) * Math.abs(ca) + (BARR_HW + 2) * Math.abs(sa) + 1;
+    const ey = (BARR_HALF + 2) * Math.abs(sa) + (BARR_HW + 2) * Math.abs(ca) + 1;
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.ceil(ex * 2 * SS)); c.height = Math.max(1, Math.ceil(ey * 2 * SS));
+    const g = c.getContext("2d"); g.scale(SS, SS); g.translate(ex, ey); g.rotate(a);
+    g.fillStyle = "#3f3122"; g.fillRect(-BARR_HALF - 2, -BARR_HW - 2, BARR_HALF * 2 + 4, BARR_HW * 2 + 4); // dark rim
+    g.fillStyle = "#9a7048"; g.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2); // plank body
+    g.fillStyle = "#b58a58"; g.fillRect(-BARR_HALF + 2, -BARR_HW + 2, BARR_HALF * 2 - 4, BARR_HW * 2 - 4); // sunlit face
+    g.fillStyle = "#7a5a36"; // lengthwise plank seams splitting three boards
+    g.fillRect(-BARR_HALF, -BARR_HW + BARR_HW * 2 / 3 - 0.75, BARR_HALF * 2, 1.5);
+    g.fillRect(-BARR_HALF, -BARR_HW + BARR_HW * 4 / 3 - 0.75, BARR_HALF * 2, 1.5);
+    g.fillStyle = "#6b4e30"; // darker end posts (nailed uprights)
+    g.fillRect(-BARR_HALF, -BARR_HW, 4, BARR_HW * 2); g.fillRect(BARR_HALF - 4, -BARR_HW, 4, BARR_HW * 2);
+    g.fillStyle = "#2e2318"; // nail heads on the posts
+    g.beginPath();
+    for (const px of [-BARR_HALF + 2, BARR_HALF - 2]) for (const py of [-BARR_HW / 2, BARR_HW / 2]) {
+      g.moveTo(px + 1.1, py); g.arc(px, py, 1.1, 0, 7);
+    }
+    g.fill();
+    // baked grain: fixed streaks per direction (lumber reads fine repeating;
+    // per-wall damage variation comes from the live overlay, not the sprite)
+    g.strokeStyle = "rgba(90,62,34,0.5)"; g.lineWidth = 1;
+    let gs = d * 7919 + 13;
+    const gr = () => (gs = (gs * 16807) % 2147483647) / 2147483647;
+    g.beginPath();
+    for (let k = 0; k < 6; k++) {
+      const gy = -BARR_HW + 3 + gr() * (BARR_HW * 2 - 6);
+      const gx0 = -BARR_HALF + 5 + gr() * (BARR_HALF - 8), gx1 = gx0 + 8 + gr() * 14;
+      g.moveTo(gx0, gy); g.lineTo(Math.min(gx1, BARR_HALF - 5), gy + (gr() - 0.5) * 2);
+    }
+    g.stroke();
+    woodSprs.push({ c, w: ex * 2, h: ey * 2 });
+  }
+}
+// Wooden damage overlay: no health bar — the wall itself shows the hurt in
+// four visual stages (pristine / cracked / splintered / falling apart) drawn
+// live over the baked sprite, deterministic per wall so it never shimmers.
+function drawWoodDamage(t) {
+  const f = t.hp / t.maxHp;
+  const stage = f > 0.75 ? 0 : f > 0.5 ? 1 : f > 0.25 ? 2 : 3;
+  if (!stage) return;
+  let s = (Math.abs(t.x * 7 + t.y * 13) | 0) + 1;
+  const R = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  ctx.save(); ctx.translate(t.x, t.y); ctx.rotate(barrAng(t));
+  ctx.lineCap = "round";
+  const crack = (x0, y0, x1, y1, w) => {
+    ctx.strokeStyle = "#3a2a1a"; ctx.lineWidth = w; ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    const mx = (x0 + x1) / 2 + (R() - 0.5) * 6, my = (y0 + y1) / 2 + (R() - 0.5) * 4;
+    ctx.lineTo(mx, my); ctx.lineTo(x1, y1); ctx.stroke();
+  };
+  const hole = (x, y, r) => {
+    ctx.fillStyle = "#241a10"; ctx.beginPath();
+    ctx.ellipse(x, y, r, r * 0.7, (R() - 0.5), 0, 7); ctx.fill();
+    ctx.strokeStyle = "#5e452a"; ctx.lineWidth = 1; ctx.stroke();
+  };
+  const nCrack = stage === 1 ? 2 : stage === 2 ? 4 : 6;
+  for (let i = 0; i < nCrack; i++) {
+    const x0 = -BARR_HALF + 4 + R() * (BARR_HALF * 2 - 8);
+    crack(x0, -BARR_HW + 2 + R() * 4, x0 + (R() - 0.5) * 16, BARR_HW - 2 - R() * 4, 1 + R());
+  }
+  if (stage >= 2) for (let i = 0; i < 2; i++) hole(-BARR_HALF + 6 + R() * (BARR_HALF * 2 - 12), -BARR_HW + 4 + R() * (BARR_HW * 2 - 8), 1.6 + R() * 1.4);
+  if (stage >= 3) {
+    for (let i = 0; i < 3; i++) hole(-BARR_HALF + 6 + R() * (BARR_HALF * 2 - 12), -BARR_HW + 4 + R() * (BARR_HW * 2 - 8), 2 + R() * 1.6);
+    crack(-BARR_HALF + 3, 0, BARR_HALF - 3, (R() - 0.5) * 4, 1.6); // long split along the middle plank
+  }
+  ctx.restore();
+}
+// Felled-wood heap: a scuffed-earth hollow with two broken post stubs and a
+// two-layer scatter of planks (dark bed layer, sunlit top boards with grain
+// and nail heads) plus splinters. Saved, restored by trash, wiped by
+// restart/clear/demo. Deterministic per heap, culled with the litter pass.
+function drawRubble(r) {
+  let s = (Math.abs(r.x * 5 + r.y * 11) | 0) + 7;
+  const R = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  ctx.save(); ctx.translate(r.x, r.y);
+  // disturbed earth where the wall came down: wall-aligned like the heap
+  // (the whole ground scar rotates with the wall's frame), but offset
+  // straight down in world like standing-wall shadows — so the world (0,3)
+  // offset is converted into the wall frame: (d*sin, d*cos).
+  const da = (r.dir | 0) * Math.PI / 4, dsn = Math.sin(da), dcs = Math.cos(da);
+  ctx.rotate(da);
+  ctx.fillStyle = "rgba(107,88,54,0.55)";
+  ctx.beginPath(); ctx.ellipse(3 * dsn, 3 * dcs, 20, 7, 0, 0, 7); ctx.fill();
+  // broken upright stubs where the wall snapped off its posts
+  for (const e of [-1, 1]) {
+    const px = e * (BARR_HALF - 2), py = (R() - 0.5) * 4;
+    ctx.save(); ctx.translate(px, py); ctx.rotate((R() - 0.5) * 0.5);
+    ctx.fillStyle = "#4a3520";
+    ctx.fillRect(-2.5, -6, 5, 12);
+    ctx.fillStyle = "#8a6136"; // splintered top of the stub
+    ctx.beginPath(); ctx.moveTo(-2.5, -6); ctx.lineTo(0, -9 - R() * 3); ctx.lineTo(2.5, -6); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // bed layer: dark planks lying flat
+  for (let i = 0; i < 5; i++) {
+    const w = 10 + R() * 12, h = 2.6 + R() * 2;
+    ctx.save();
+    ctx.translate((R() - 0.5) * 26, (R() - 0.5) * 14);
+    ctx.rotate((R() - 0.5) * 1.1);
+    ctx.fillStyle = ["#5e4023", "#6f4e2c", "#54371e"][(R() * 3) | 0];
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.restore();
+  }
+  // top boards: sunlit faces with a grain stroke and nail heads
+  for (let i = 0; i < 4; i++) {
+    const w = 12 + R() * 12, h = 3 + R() * 2;
+    ctx.save();
+    ctx.translate((R() - 0.5) * 22, (R() - 0.5) * 12);
+    ctx.rotate((R() - 0.5) * 1.4);
+    ctx.fillStyle = ["#9a7048", "#b58a58", "#8a6136"][(R() * 3) | 0];
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.strokeStyle = "rgba(70,45,22,0.7)"; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(-w / 2 + 1, (R() - 0.5) * h * 0.5); ctx.lineTo(w / 2 - 1, (R() - 0.5) * h * 0.5); ctx.stroke();
+    ctx.fillStyle = "#2e2318"; // nail heads
+    ctx.beginPath();
+    ctx.arc(-w / 2 + 2.5, 0, 0.9, 0, 7); ctx.arc(w / 2 - 2.5, 0, 0.9, 0, 7);
+    ctx.fill();
+    ctx.restore();
+  }
+  // scattered splinters
+  ctx.fillStyle = "#c89a62";
+  for (let i = 0; i < 5; i++) {
+    ctx.save();
+    ctx.translate((R() - 0.5) * 36, (R() - 0.5) * 20);
+    ctx.rotate(R() * Math.PI);
+    ctx.fillRect(-2.5 - R() * 2, -0.7, 5 + R() * 4, 1.4);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+// Collapsing wall: three big plank chunks burst outward along the wall axis,
+// pop up, spin and sink back onto the heap over ~0.5s while a dust ring
+// spreads and fades. Transient (never saved); age ticks in ageParts.
+function drawWreck(w) {
+  const k = Math.max(0, Math.min(1, w.age / w.life));
+  let s = (w.seed | 0) + 1;
+  const R = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  const fade = 1 - k, lift = -14 * Math.sin(Math.PI * Math.min(1, k * 1.15));
+  ctx.save(); ctx.translate(w.x, w.y);
+  // settling dust ring in WORLD space (unrotated): the shockwave spreads on
+  // the ground, so it must read the same at every wall angle — drawn inside
+  // the rotated frame below it stretched along the wall (tall at dir 2,
+  // tilted at odd dirs). Only the plank chunks belong to the wall's frame.
+  ctx.globalAlpha = Math.max(0, 0.5 * fade);
+  ctx.strokeStyle = "#beaa82"; ctx.lineWidth = 3 * fade + 1;
+  ctx.beginPath(); ctx.ellipse(0, 2, 12 + 46 * k, 10 + 34 * k, 0, 0, 7); ctx.stroke();
+  ctx.rotate((w.dir | 0) * Math.PI / 4);
+  ctx.globalAlpha = fade;
+  for (let i = 0; i < 3; i++) {
+    const len = (BARR_HALF * 2) * (0.5 - i * 0.06), wid = 6.5 - i * 0.8;
+    const side = i === 0 ? -1 : 1, along = (i - 1) * BARR_HALF * 0.55;
+    const px = along * (0.2 + 0.6 * k) + side * 6 * k + (R() - 0.5) * 8;
+    const py = lift * (0.7 + R() * 0.6) + (R() - 0.5) * 8 + i * 2;
+    ctx.save(); ctx.translate(px, py); ctx.rotate((R() - 0.5) * 0.4 + side * k * (0.5 + R() * 0.5));
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(-len / 2 + 1.5, -wid / 2 + 2.5, len, wid); // chunk shadow on the heap
+    ctx.fillStyle = ["#9a7048", "#b58a58", "#7a5a36"][i % 3];
+    ctx.fillRect(-len / 2, -wid / 2, len, wid);
+    ctx.fillStyle = "rgba(255,235,200,0.35)";
+    ctx.fillRect(-len / 2, -wid / 2, len, 1.4); // sunlit top edge
+    ctx.strokeStyle = "rgba(70,45,22,0.8)"; ctx.lineWidth = 0.9;
+    ctx.beginPath(); ctx.moveTo(-len / 2 + 1, 0.6); ctx.lineTo(len / 2 - 1, -0.6); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 function buildTreeSprites() {
   if (treeBaseSpr && treeCanSpr.length === 25) return; // fixed world-unit bake: DPR-independent, build once
@@ -2755,14 +3091,15 @@ function renderTreeBases() {
     ctx.moveTo(c0x, c0y); ctx.lineTo(c1x, c1y); ctx.lineTo(c2x, c2y); ctx.lineTo(c3x, c3y); ctx.closePath();
   }
   ctx.fill();
-  ctx.imageSmoothingEnabled = zoomSettled(); // settled frames resample smooth (matches the vector look); mid-gesture frames take the fast nearest path and the crisp smooth frame lands on settle
+  ctx.imageSmoothingEnabled = smoothOK(); // settled frames resample smooth (matches the vector look); mid-gesture frames take the fast nearest path and the crisp smooth frame lands on settle
   for (const t of trees) {
     if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
-    if (t.kind === "barr") { // baked body sprite per direction (speckles batch after the loop)
+    if (t.kind === "barr") { // baked body sprite per direction (concrete speckles batch after the loop; wood damage draws live below)
       const dd = barrDir(t);
-      let bs = barrSprs[dd];
-      if (!bs) { buildBarrSprites(); bs = barrSprs[dd]; }
+      let bs = t.wood ? woodSprs[dd] : barrSprs[dd];
+      if (!bs) { if (t.wood) buildWoodSprites(); else buildBarrSprites(); bs = t.wood ? woodSprs[dd] : barrSprs[dd]; }
       ctx.drawImage(bs.c, t.x - bs.w / 2, t.y - bs.h / 2, bs.w, bs.h);
+      if (t.wood) drawWoodDamage(t); // no health bar: the wall itself shows the hurt
       continue;
     }
     // roots + trunk: one baked blit (identical for every tree)
@@ -2787,6 +3124,7 @@ function renderTreeBases() {
     ctx.beginPath();
     for (const t of trees) {
       if (t.kind !== "barr") continue;
+      if (t.wood) continue; // wood grain is baked into its sprite; concrete speckle would read wrong on planks
       if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
       const dd = barrDir(t), ax = BARR_COS[dd], ay = BARR_SIN[dd];
       for (let k = 0; k < 8; k++) {
@@ -2797,13 +3135,25 @@ function renderTreeBases() {
     }
     ctx.fill();
   }
+  // felled-wood heaps draw with the ground litter (under units and canopies,
+  // same as the parts under-pass) — small, static, culled to the viewport
+  for (const r of rubble) {
+    if (r.x < vx0 || r.x > vx1 || r.y < vy0 || r.y > vy1) continue;
+    drawRubble(r);
+  }
+  // collapsing walls animate above their fresh heap for ~0.5s (same pass,
+  // so chunks never drape over canopies)
+  for (const w of wrecks) {
+    if (w.x < vx0 - 60 || w.x > vx1 + 60 || w.y < vy0 - 60 || w.y > vy1 + 60) continue;
+    drawWreck(w);
+  }
 }
 function renderTreeCanopies() {
   // crown sits high (center y-8) so it reads as a tree, not a bush.
   // Barricades have no canopy — they drew fully in the bases pass.
   // Culled to the viewport (crown r43 + sway/wobble fit in 90px).
   const vx0 = cam.x - 90, vy0 = cam.y - 90, vx1 = cam.x + W / zoom + 90, vy1 = cam.y + H / zoom + 90;
-  ctx.imageSmoothingEnabled = zoomSettled(); // settled frames resample smooth (matches the vector look); mid-gesture frames take the fast nearest path and the crisp smooth frame lands on settle
+  ctx.imageSmoothingEnabled = smoothOK(); // settled frames resample smooth (matches the vector look); mid-gesture frames take the fast nearest path and the crisp smooth frame lands on settle
   for (const t of trees) {
     if (t.kind === "barr") continue;
     if (t.x < vx0 || t.x > vx1 || t.y < vy0 || t.y > vy1) continue;
@@ -2876,21 +3226,22 @@ function paintAt(x, y) {
   if (brush.unit === "tree") { const pt0 = plantTree(x, y); if (pt0) { if (strokeNew) strokeNew.push({ arr: trees, o: pt0 }); } else if (inWaterAt(floorGridGet(), x, y)) poof(x, y, "#999999", 4); return; } // water refusals puff (spacing refusals stay silent, as before)
   // a fresh placement drops the old selection, so the wheel follows the
   // placement ghost again instead of spinning a wall behind your back
-  if (brush.unit === "barricade") {
+  if (barrBrush()) {
     // drag-painted walls chain into unbroken lines: fill 40px hops from the
     // last plant of this stroke, so a fast stroke can't leave bullet-sized
     // gaps between walls (each hop still obeys spacing/edge caps and may
     // refuse — later hops keep their rhythm from the last success)
+    const wood = brush.unit === "woodbarr";
     if (lastBarrPlant) {
       const fdx = x - lastBarrPlant.x, fdy = y - lastBarrPlant.y;
       const fd = Math.hypot(fdx, fdy);
       const ox = lastBarrPlant.x, oy = lastBarrPlant.y; // anchor stays put for the whole stroke segment
       for (let dd = 40; dd < fd; dd += 40) {
-        const t = plantBarr(ox + fdx * dd / fd, oy + fdy * dd / fd);
+        const t = plantBarr(ox + fdx * dd / fd, oy + fdy * dd / fd, wood);
         if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (strokeNew) strokeNew.push({ arr: trees, o: t }); }
       }
     }
-    const t = plantBarr(x, y);
+    const t = plantBarr(x, y, wood);
     if (t) { lastBarrPlant = { x: t.x, y: t.y }; if (strokeNew) strokeNew.push({ arr: trees, o: t }); }
     else if (inWaterAt(floorGridGet(), x, y)) poof(x, y, "#999999", 4); // water refusals puff at the stroke endpoint (chain hops stay silent, as before)
     return;
@@ -3022,8 +3373,12 @@ function acquire(u) {
     const e = tgtCount.get(best);
     if (((e && e[u.faction]) || 0) - (u.tx === best ? 1 : 0) >= 2) best = second;
   }
-  // reaction delay on a fresh target so kills don't snap instantly
-  if (best && best !== u.tx) u.cool = Math.max(u.cool, 0.22 + Math.random() * 0.3);
+  // reaction delay on a fresh target so kills don't snap instantly —
+  // but point-blank contact reacts faster than a distant sighting
+  if (best && best !== u.tx) {
+    const brx = best.x - u.x, bry = best.y - u.y;
+    u.cool = Math.max(u.cool, (brx * brx + bry * bry < 22500) ? 0.06 + Math.random() * 0.1 : 0.22 + Math.random() * 0.3);
+  }
   if (u.tx !== best) {
     if (u.tx) { const eo = tgtCount.get(u.tx); if (eo && eo[u.faction]) eo[u.faction]--; }
     if (best) { let en = tgtCount.get(best); if (!en) { en = {}; tgtCount.set(best, en); } en[u.faction] = (en[u.faction] || 0) + 1; }
@@ -3164,6 +3519,11 @@ function splashAt(x, y, big) {
 }
 
 function ageParts(dt) { // cosmetic particle aging (shared: the sim calls it per step, the loop calls it while paused)
+  // collapsing-wood animations age on the same clock (they play out paused too)
+  for (let i = wrecks.length - 1; i >= 0; i--) {
+    wrecks[i].age += dt;
+    if (wrecks[i].age >= wrecks[i].life) wrecks.splice(i, 1);
+  }
   // air drag is per sim-second, not per step: a bare *= 0.9 damps 4x harder
   // per sim-second in slow motion (240 steps) than at 1x (60 steps), so splash
   // droplets froze mid-air and dribbled down — and weaker at low fps. pow()
@@ -3188,7 +3548,9 @@ function step(dt) {
   // tgtCount as it reassigns, coverJoin/coverLeave maintain coverOcc)
   // persistent grid (cleared per step — identical contents, no per-tick Map + bucket churn)
   const grid = unitGrid || (unitGrid = new Map());
-  grid.clear();
+  // reuse the cell buckets (same empty contents as clear(), without dropping
+  // every bucket array and re-allocating it next step — no per-step GC churn)
+  for (const a of grid.values()) a.length = 0;
   // per-tick snapshots start empty, fill in the pass below, and stay alive
   // for the whole step: joins/leaves (cover) and reassigns (targets) keep
   // them exact as the tick's assignments change.
@@ -3200,7 +3562,7 @@ function step(dt) {
     if (u.hp > 0 && u.sp) spCount.set(u.sp, (spCount.get(u.sp) || 0) + 1);
     if (u.hp <= 0 || !isFinite(u.x + u.y)) continue;
     liveN++; liveF[u.faction] = (liveF[u.faction] || 0) + 1;
-    const k = (((u.x / UGS) | 0) + 128) * 2048 + (((u.y / UGS) | 0) + 128); // inlined ugk (same key, minus the call)
+    const k = ((((u.x / UGS) | 0) + 128) << 11) | (((u.y / UGS) | 0) + 128); // inlined bitwise ugk
     let a = grid.get(k); if (!a) { a = []; grid.set(k, a); } a.push(u);
     // same-tick occupancy + target counts (joins/leaves during the tick keep
     // both maps exact; acquire maintains tgtCount as it reassigns below)
@@ -3273,8 +3635,10 @@ function step(dt) {
         if (!victim) {
           let bd2 = Infinity;
           const qx = (u.x / UGS) | 0, qy = (u.y / UGS) | 0;
-          for (let ix = qx - 1; ix <= qx + 1; ix++) for (let iy = qy - 1; iy <= qy + 1; iy++) {
-            const cell = grid.get((ix + 128) * 2048 + (iy + 128)); if (!cell) continue; // inlined ugk3 (same key, minus the call)
+          for (let ix = qx - 1; ix <= qx + 1; ix++) {
+            const rowBase = (ix + 128) << 11;
+            for (let iy = qy - 1; iy <= qy + 1; iy++) {
+              const cell = grid.get(rowBase | (iy + 128)); if (!cell) continue;
             for (const o of cell) {
               if (o === u || o.hp <= 0 || (teamsMode && o.faction !== u.faction)) continue; // inlined isEnemy (same test, minus the call)
               const tdef = UNIT_DEFS[o.kind] || def;
@@ -3283,6 +3647,7 @@ function step(dt) {
               if (d2 < reach * reach && d2 < bd2) { bd2 = d2; victim = o; }
             }
           }
+        }
         }
         if (victim) {
           const vdx = victim.x - u.x, vdy = victim.y - u.y, vl = Math.max(1, Math.sqrt(vdx * vdx + vdy * vdy));
@@ -3429,6 +3794,31 @@ function step(dt) {
     u.boost = Math.max(0, u.boost - dt * 1.2);
     if (u.tx) { u.jinkCd = Math.max(0, (u.jinkCd || 0) - dt); u.bashCd = Math.max(0, (u.bashCd || 0) - dt); }
     else if (mode === "ffa" ? liveN > 1 : liveN - (liveF[u.faction] || 0) > 0) u.goalT -= dt;
+    // close-range sense: a targetless unit sitting in a long empty-scan
+    // backoff still hears boots right next to it. A staggered 5x5 grid probe
+    // (1/8 of units per step, first live enemy within ~110px + LOS wins)
+    // pulls the rescan forward instead of waiting out the ~1s backoff.
+    // Units holding a live target skip this entirely (zero cost in a fight);
+    // peaceful spread-out fields find nothing and keep their backoff.
+    if ((!u.tx || u.tx.hp <= 0) && u.retarget > 0.15 && ((u.id ^ stepTick) & 7) === 0) {
+      const qx = (u.x / UGS) | 0, qy = (u.y / UGS) | 0;
+      let sensed = false;
+      for (let ix = qx - 2; ix <= qx + 2 && !sensed; ix++) {
+        const rowBase = (ix + 128) << 11;
+        for (let iy = qy - 2; iy <= qy + 2 && !sensed; iy++) {
+          const cell = grid.get(rowBase | (iy + 128)); if (!cell) continue;
+        for (const o of cell) {
+          if (o === u || o.hp <= 0) continue;
+          if (teamsMode && o.faction === u.faction) continue;
+          const rx = o.x - u.x, ry = o.y - u.y;
+          if (rx * rx + ry * ry > 12100) continue; // ~110px sense
+          if (!canSee(u, o.x, o.y)) continue;
+          sensed = true; break;
+        }
+      }
+      }
+      if (sensed) u.retarget = Math.min(u.retarget, 0.05 + Math.random() * 0.08);
+    }
     // staggered retargets keep 400 units cheap — including the targetless
     // case: a lost target re-acquires immediately (same as before), but a
     // scan that comes up empty backs off to ~1s instead of rescanning
@@ -3625,8 +4015,8 @@ function step(dt) {
             } else {
             const exa = dx / d, eya = dy / d;
             let pBx = exa, pBy = eya, pBest = -Infinity;
-            for (let pai = 0; pai < PATH_ANGLES.length; pai++) {
-              const ang = PATH_ANGLES[pai], ca = Math.cos(ang), sa = Math.sin(ang);
+            for (let pai = 0; pai < PATH_DIRS.length; pai++) {
+              const { ca, sa } = PATH_DIRS[pai];
               const hx = exa * ca - eya * sa, hy = exa * sa + eya * ca;
               const b1 = floorBoostAt(fgU, u.x + hx * 120, u.y + hy * 120);
               const b2 = floorBoostAt(fgU, u.x + hx * 240, u.y + hy * 240);
@@ -4106,7 +4496,10 @@ function step(dt) {
           }
         }
       }
-      u._dec = { mvx, mvy, engaged, wantLead, laneBlocked, wallBlocked, trunkBlocked, standSniper };
+      // reuse the decide record instead of allocating one every other step
+      const dec = u._dec || (u._dec = {}); // same fields (and hidden class) every time
+      dec.mvx = mvx; dec.mvy = mvy; dec.engaged = engaged; dec.wantLead = wantLead;
+      dec.laneBlocked = laneBlocked; dec.wallBlocked = wallBlocked; dec.trunkBlocked = trunkBlocked; dec.standSniper = standSniper;
     } else { // staggered decide: reuse last step's intent/flags; timers ticked above, guns stay live
       mvx = u._dec.mvx; mvy = u._dec.mvy; engaged = u._dec.engaged; wantLead = u._dec.wantLead;
       laneBlocked = u._dec.laneBlocked; wallBlocked = u._dec.wallBlocked; trunkBlocked = u._dec.trunkBlocked;
@@ -4144,8 +4537,10 @@ function step(dt) {
       allyBlockFresh = !!u.allyBlock;
     } else {
     const cx = (u.x / UGS) | 0, cy = (u.y / UGS) | 0;
-    for (let ix = cx - 1; ix <= cx + 1; ix++) for (let iy = cy - 1; iy <= cy + 1; iy++) {
-      const cell = grid.get((ix + 128) * 2048 + (iy + 128)); if (!cell) continue; // inlined ugk3 (same key, minus the call)
+    for (let ix = cx - 1; ix <= cx + 1; ix++) {
+      const rowBase = (ix + 128) << 11;
+      for (let iy = cy - 1; iy <= cy + 1; iy++) {
+        const cell = grid.get(rowBase | (iy + 128)); if (!cell) continue;
       for (const o of cell) {
         if (o === u || o.hp <= 0) continue;
         const allied = teamsMode && o.faction === u.faction;
@@ -4179,6 +4574,7 @@ function step(dt) {
         }
         if (allied && d2 < 120*120 && d2 > 0.01) { anx += o.x; any += o.y; anc++; }
       }
+    }
     }
     u._fsx = sx; u._fsy = sy; u._ffx = fx; u._ffy = fy;
     u._fanx = anx; u._fany = any; u._fanc = anc;
@@ -4457,16 +4853,19 @@ function step(dt) {
       b.x += b.vx * h; b.y += b.vy * h; b.age = (b.age || 0) + h;
       out = b.x < -20 || b.y < -20 || b.x > FW + 20 || b.y > FH + 20;
       if (out) { dead = true; break; }
-      // trunks block bullets, and barricades block them ONLY while someone is
-      // actively using that wall as cover (tucked behind it against this
-      // exact shot) — an empty wall is just concrete the round flies past.
-      // Hits only chip bark/concrete — nothing takes damage or falls.
+      // trunks block bullets, and concrete barricades block them ONLY while
+      // someone is actively using that wall as cover (tucked behind it
+      // against this exact shot) — an empty concrete wall is just concrete
+      // the round flies past. Wooden barricades are solid wood: every round
+      // stops in them, chewing the wall until it falls (see chipWood).
+      // Hits only chip bark/concrete — only wood takes damage or falls.
       // (brief grace so a muzzle inside the wood doesn't insta-hit).
         if (b.age > 0.06) {
           const cell = tg.get(tgk(b.x, b.y));
           if (cell) for (const t of cell) {
             if (t.kind === "barr") {
               if (barrHit(t, b.x, b.y)) {
+                if (t.wood) { if (trees.includes(t)) chipTree(t, b.x, b.y, b); hitTree = true; dead = true; break; } // solid wood stops every round (chewing the wall as it does, until it falls) — only concrete lets undefended shots pass through. The includes() skips same-tick ghosts: the per-step grid above still lists a wall felled by an earlier bullet this step, and bursting particles (or re-damaging) an already-gone wall is pure waste — the bullet still dies where the wall stood, so its lifecycle is unchanged
                 if (wallGuardsTick !== stepTick) {
                   wallGuardsTick = stepTick; wallGuards = new Map();
                   for (const u2 of units) {
@@ -4490,8 +4889,10 @@ function step(dt) {
       }
       if (!dead) {
         const bcx = ((b.x / UGS) | 0), bcy = ((b.y / UGS) | 0);
-        outer: for (let ix = bcx - 1; ix <= bcx + 1; ix++) for (let iy = bcy - 1; iy <= bcy + 1; iy++) {
-          const cell = grid.get((ix + 128) * 2048 + (iy + 128)); if (!cell) continue; // inlined ugk3 (same key, minus the call)
+        outer: for (let ix = bcx - 1; ix <= bcx + 1; ix++) {
+          const rowBase = (ix + 128) << 11;
+          for (let iy = bcy - 1; iy <= bcy + 1; iy++) {
+            const cell = grid.get(rowBase | (iy + 128)); if (!cell) continue;
           for (const u of cell) {
             if (u.hp <= 0 || u.id === b.owner) continue;
             if (mode === "teams" && u.faction === b.faction) continue;
@@ -4529,6 +4930,7 @@ function step(dt) {
               hitU = true; dead = true; break outer;
             }
           }
+        }
         }
       }
     }
@@ -4715,6 +5117,16 @@ function step(dt) {
     b.age += dt;
     if (b.age > 10) { concBits.splice(i, 1); continue; } // concrete chips dissipate after 10s
     if (b.falling) { // chips pop off the wall, then settle around the base
+      b.vy += 620 * dt;
+      b.x += b.vx * dt; b.y += b.vy * dt; b.rot += (b.vr || 0) * dt;
+      if (b.gy === undefined || b.y >= b.gy) { b.y = b.gy !== undefined ? b.gy : b.y; b.falling = false; }
+    }
+  }
+  for (let i = woodBits.length - 1; i >= 0; i--) {
+    const b = woodBits[i];
+    b.age += dt;
+    if (b.age > 10) { woodBits.splice(i, 1); continue; } // splinters dissipate after 10s
+    if (b.falling) { // destruction kicks chips out, then they settle onto the ground
       b.vy += 620 * dt;
       b.x += b.vx * dt; b.y += b.vy * dt; b.rot += (b.vr || 0) * dt;
       if (b.gy === undefined || b.y >= b.gy) { b.y = b.gy !== undefined ? b.gy : b.y; b.falling = false; }
@@ -5058,7 +5470,7 @@ function renderUnits(sorted) {
   // bodies: one blit each (suit + helmet baked in when worn); rollers spin
   for (i = 0; i < sorted.length; i++) {
     u = sorted[i]; F = u._f;
-    const df = dispFaction(u.faction);
+    const df = F.df; // already resolved in unitFrame (same value as dispFaction)
     const set = u.kind === "sniper" ? (u.hat ? sniperSpr[df] : bodySpr[df]) : (u.helmet ? bodyHelmSpr[df] : bodySpr[df]);
     if (!set) continue;
     if (u.rollT > 0) {
@@ -5324,8 +5736,11 @@ function renderCorpses() {
       ctx.beginPath(); ctx.ellipse(c.px, c.py + 6, 14, 9, 0, 0, 7); ctx.fill();
       ctx.globalAlpha = 1;
     }
-    const wetC = inWaterAt(fgC, c.x, c.y);
-    const deepC = wetC && inDeepWaterAt(fgC, c.x, c.y); // deep-water dead sink instead of fading: half-submerged at first, fully under by 20s (spliced there — the land 25-30s fade below never runs for them)
+    // one floor lookup serves both wet and deep (inWaterAt/inDeepWaterAt would
+    // each walk the same cell a second time)
+    const cFl = topFloorAt(fgC, c.x, c.y);
+    const wetC = !!cFl && (cFl.kind === "water" || cFl.kind === "deepwater");
+    const deepC = wetC && cFl.kind === "deepwater"; // deep-water dead sink instead of fading: half-submerged at first, fully under by 20s (spliced there — the land 25-30s fade below never runs for them)
     const dk = deepC ? Math.min(1, c.age / 20) : 0;
     const fading = !deepC && c.age > 25;
     const sp = c.img || (corpseSpr[dispFaction(c.faction)] || corpseSpr.red)[c.kind === "sniper" ? (c.hat ? 2 : 0) : (c.helmet ? 1 : 0)];
@@ -5416,18 +5831,27 @@ function drawPart(p, ex0, ey0, ex1, ey1) {
   }
   ctx.globalAlpha = 1;
 }
+// reused scratch list for the per-frame alive-unit draw order (avoids a
+// filter+sort array allocation every frame; renderUnits only reads it)
+const _uDraw = [];
 function render() {
   drawGrass(); // grass tiles + all live holes inside
   renderBarkBits();
   renderLeafBits();
   renderConcBits();
+  renderWoodBits();
   // corpses and pools rest on the ground: paint them before the tree bases
   // so a body at a trunk reads as lying behind the wood, never draped over it
   renderDyingPools();
   renderCorpses();
   renderTreeBases();
   renderDying();
-  renderUnits(units.filter(u => u.hp > 0).sort((a, b) => a.y - b.y));
+  // alive units back-to-front, collected into the reused list (same order the
+  // old filter+sort produced); the ffa winner check below reuses it too
+  _uDraw.length = 0;
+  for (const u of units) if (u.hp > 0) _uDraw.push(u);
+  _uDraw.sort((a, b) => a.y - b.y);
+  renderUnits(_uDraw);
   renderSpawners();
   // knocked-off headgear rests on the ground: draw it before the canopies
   // (with the other ground litter) so trees cover hats, not the reverse
@@ -5451,7 +5875,7 @@ function render() {
   renderTreeCanopies();
   // winner ring (ffa last-one-standing)
   if (mode === "ffa" && winner) {
-    const au = units.filter(u => u.hp > 0);
+    const au = _uDraw; // still the alive units from the draw pass above (renderUnits only reads it)
     // Culled like everything else (ring radius ~23px).
     if (au.length === 1 && au[0].x > cam.x - 40 && au[0].x < cam.x + W / zoom + 40 && au[0].y > cam.y - 40 && au[0].y < cam.y + H / zoom + 40) {
       ctx.strokeStyle = "gold"; ctx.lineWidth = 3;
@@ -5513,7 +5937,7 @@ function drawGhost() {
     // footprint-accurate per tab: the flooring eraser carves whatever the
     // wheel-sized cursor touches, units pick within 26, trees within 40,
     // walls within 30 — each only inside its own selected category
-    const er = brush.tab === "flooring" ? eraseR : (brush.tab === "objects" ? (brush.unit === "barricade" ? 30 : 40) : 26);
+    const er = brush.tab === "flooring" ? eraseR : (brush.tab === "objects" ? (barrBrush() ? 30 : 40) : 26);
     octx.globalAlpha = 0.85;
     octx.strokeStyle = brush.tab === "flooring" ? (FLOOR_COL[brush.unit] || FLOOR_COL.dirt) : "#fff";
     // zoom-compensated stroke: the radius stays exact (it promises the wipe
@@ -5530,13 +5954,13 @@ function drawGhost() {
   // at the cap, the ghost for that object turns red and says so: planting
   // already refuses there, so the cursor warns before the click.
   const atCap = brush.unit === "tree" ? capWood >= MAX_TREES
-    : brush.unit === "barricade" ? capBarr >= BARR_MAX
+    : barrBrush() ? capBarr >= BARR_MAX
     : (UNIT_DEFS[brush.unit] ? factionCount(brush.faction) >= MAX_UNITS : false);
   const RC = "#ff5b4d"; // cap red (replaces the ghost's white accents)
   octx.setTransform(DPR * zoom, 0, 0, DPR * zoom, -cam.x * DPR * zoom, -cam.y * DPR * zoom);
   {
     const gx = mouse.x / zoom + cam.x, gy = mouse.y / zoom + cam.y;
-    const wetNo = (brush.unit === "tree" || brush.unit === "barricade") && inWaterAt(floorGridGet(), gx, gy); // cursor over open water: planting refuses here, so the ghost warns like the cap does
+    const wetNo = (brush.unit === "tree" || barrBrush()) && inWaterAt(floorGridGet(), gx, gy); // cursor over open water: planting refuses here, so the ghost warns like the cap does
     if (brush.spawner) {
       const sC = atCap ? RC : (FACTIONS[brush.faction] || "#fff");
       octx.globalAlpha = 0.8;
@@ -5575,13 +5999,13 @@ function drawGhost() {
       else if (wetNo) ghostCapMsg(gx, gy, 62, "Can't place this on water");
       return;
     }
-    if (brush.unit === "barricade") {
+    if (barrBrush()) {
       const a = (pendingBarrDir | 0) * Math.PI / 4, ca = Math.cos(a);
       octx.save(); octx.translate(gx, gy); octx.rotate(a);
-      const bad = atCap || wetNo;
-      octx.globalAlpha = 0.5; octx.fillStyle = bad ? "#c07a72" : "#b9bdc4";
+      const bad = atCap || wetNo, wood = brush.unit === "woodbarr";
+      octx.globalAlpha = 0.5; octx.fillStyle = bad ? (wood ? "#a06a48" : "#c07a72") : (wood ? "#9a7048" : "#b9bdc4");
       octx.fillRect(-BARR_HALF, -BARR_HW, BARR_HALF * 2, BARR_HW * 2);
-      octx.globalAlpha = 0.5; octx.fillStyle = bad ? "#d98880" : "#d5d9df"; // sunlit top face, like the real wall
+      octx.globalAlpha = 0.5; octx.fillStyle = bad ? (wood ? "#b87f56" : "#d98880") : (wood ? "#b58a58" : "#d5d9df"); // sunlit top face, like the real wall
       octx.fillRect(-BARR_HALF + 3, -BARR_HW + 4, BARR_HALF * 2 - 6, BARR_HW * 2 - 8);
       const gUp = ca > 0 ? ca : 0, gDn = ca < 0 ? -ca : 0; // wash the up-facing long edge
       octx.fillStyle = bad ? RC : "#fff";
@@ -5674,13 +6098,18 @@ function loop(now) {
   const pkx = ((keys.KeyD || keys.ArrowRight) ? 1 : 0) - ((keys.KeyA || keys.ArrowLeft) ? 1 : 0);
   const pky = ((keys.KeyS || keys.ArrowDown) ? 1 : 0) - ((keys.KeyW || keys.ArrowUp) ? 1 : 0);
   if (pkx || pky) {
-    const pl = Math.hypot(pkx, pky), ps = PAN_SPEED * dt / zoom; // same screen speed at any zoom
+    const pl = Math.sqrt(pkx * pkx + pky * pky), ps = PAN_SPEED * dt / zoom; // same screen speed at any zoom (integer axis inputs: identical to hypot)
     cam.x += pkx / pl * ps; cam.y += pky / pl * ps;
   }
   // +/- zoom keys (or top-bar buttons / wheel / pinch / Q,E) anytime
   const zkeys = ((keys.Equal || keys.NumpadAdd || keys.KeyQ) ? 1 : 0) - ((keys.Minus || keys.NumpadSubtract || keys.KeyE) ? 1 : 0);
   if (zkeys) zoomAt(W / 2, H / 2, Math.exp(zkeys * 1.6 * dt));
   clampCam();
+  // pan-gesture fast path (mirrors the zoom rule above): while the camera is
+  // moving, the big layer blits resample nearest; the crisp smooth frame
+  // lands 350ms after the view settles. Every pan source (drag, keys, pinch,
+  // zoom-recenter) funnels through cam, so one movement check here covers all.
+  if (cam.x !== loop._px || cam.y !== loop._py) { loop._px = cam.x; loop._py = cam.y; lastPanT = performance.now(); }
   render();
   barT += dt;
   if (barT > 0.3) { barT = 0; refreshBar(); }
@@ -5699,13 +6128,33 @@ function trashReset() {
   // wipe can't flood the particle list past its cap.
   const pn = units.length > 40 ? 2 : 8;
   for (const u of units) poof(u.x, u.y, "#ffffff", pn);
-  for (const sp of spawners) poof(sp.x, sp.y, FACTIONS[sp.faction] || "#ffffff", 6);
-  units = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; corpses = []; helmets = []; holes = []; dying = [];
+  units = [];
+  if (clearSpawners) { // Gameplay option (on by default): the clear wipes spawners too; off keeps them (settings and counts intact) while units still go
+    for (const sp of spawners) poof(sp.x, sp.y, FACTIONS[sp.faction] || "#ffffff", 6);
+    spawners = [];
+  }
+  selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; woodBits = []; bullets = []; corpses = []; helmets = []; holes = []; dying = [];
+  // clearing the field repairs the woodwork: damaged wooden walls heal to
+  // full, and felled ones stand back up from their rubble (restart wipes
+  // everything instead, so this is the clear-only repair the spec calls for).
+  // Any mid-collapse animation is discarded with the wipe.
+  wrecks.length = 0;
+  for (const t of trees) if (t.kind === "barr" && t.wood) { t.hp = t.maxHp; }
+  for (const r of rubble) {
+    const a = (((r.dir | 0) % 8) + 8) % 8 * Math.PI / 4;
+    const pex = Math.cos(a) * BARR_HALF, pey = Math.sin(a) * BARR_HALF;
+    const pnl = Math.max(1, Math.hypot(pex, pey));
+    trees.push({ kind: "barr", wood: true, x: r.x, y: r.y, r: BARR_HALF, dir: r.dir | 0, seq: treeSeq++,
+      hp: WOOD_HP, maxHp: WOOD_HP,
+      sx1: r.x - pex, sy1: r.y - pey, sx2: r.x + pex, sy2: r.y + pey, sax: pex / pnl, say: pey / pnl,
+      _seg: [r.x - pex, r.y - pey, r.x + pex, r.y + pey] });
+  }
+  if (rubble.length) { rubble.length = 0; bumpTrees(); }
   winner = null; everMulti = false; totalKills = 0;
   refreshBar();
 }
 function clearField() {
-  units = []; trees = []; floors = []; floorCuts = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
+  units = []; trees = []; floors = []; floorCuts = []; rubble = []; wrecks = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; woodBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
   winner = null; everMulti = false; totalKills = 0;
   playing = false;
   bumpTrees(); bumpFloors(); clearFloorLayer();
@@ -5724,6 +6173,7 @@ function restart() {
 // seconds and are never saved. Standalone portable builds have no engine
 // (no root.kv), so every access below safely no-ops there.
 const FIELD_SAVE_KEY = "autosave1";
+const OPT_SAVE_KEY = "options1"; // option toggles live in the same store as the field, under their own key
 let fieldSaveReady = false, lastSavedSig = "";
 function kvFieldStore() {
   try {
@@ -5739,8 +6189,9 @@ function fieldSig() { return fieldSize + "|" + trees.length + "/" + floors.lengt
 function snapshotField() {
   return { v: 1, savedAt: Date.now(), size: fieldSize,
     trees: trees.map(t => t.kind === "barr"
-      ? { barr: 1, x: t.x, y: t.y, dir: t.dir | 0, hp: t.hp, maxHp: t.maxHp }
+      ? { barr: 1, x: t.x, y: t.y, dir: t.dir | 0, hp: t.hp, maxHp: t.maxHp, wood: t.wood ? 1 : undefined }
       : { x: t.x, y: t.y, seed: t.seed, seq: (t.seq === undefined ? t._seq : t.seq) || 0, hp: t.hp, maxHp: t.maxHp, qi: t.qi }),
+    rubble: rubble.map(r => ({ x: r.x, y: r.y, dir: r.dir | 0 })),
     floors: floors.map(f => ({ x: f.x, y: f.y, r: f.r, kind: f.kind, boost: f.boost })),
     cuts: floorCuts.map(c => ({ x: c.x, y: c.y, r: c.r, kind: c.kind })),
     spawners: spawners.map(s => ({ x: s.x, y: s.y, kind: s.kind, faction: s.faction, maxUnits: s.maxUnits, cd: s.cd, spawnR: s.spawnR })) };
@@ -5758,6 +6209,38 @@ async function saveFieldNow() {
   try { const snap = snapshotField(), snapSig = fieldSig(); await st.set(FIELD_SAVE_KEY, snap); lastSavedSig = snapSig; return true; }
   catch (_) { return false; }
   finally { saveBusy = false; }
+}
+// ---------- option persistence (same store as the field, own key) ----------
+// The three option toggles save on every flip and reload on next open, so a
+// refresh never resets them. Fire-and-forget: toggle clicks are rare, so no
+// busy-guard or sig is needed (unlike the 2s field autosave). Portable builds
+// have no store (kvFieldStore() null), so both are safe no-ops there and the
+// shipped defaults simply stand.
+async function saveOptionsNow() {
+  const st = kvFieldStore();
+  if (!st) return false;
+  try { await st.set(OPT_SAVE_KEY, { showFps, showVer, clearSpawners }); return true; }
+  catch (_) { return false; }
+}
+async function restoreOptions() {
+  // kv can resolve a beat after boot (plugin fetch) — same patience as the
+  // field restore. Booleans only: anything else keeps the shipped default.
+  for (let a = 0; a < 10; a++) {
+    const st = kvFieldStore();
+    if (st) {
+      try {
+        const d = await st.get(OPT_SAVE_KEY);
+        if (d && typeof d === "object") {
+          if (typeof d.showFps === "boolean") showFps = d.showFps;
+          if (typeof d.showVer === "boolean") showVer = d.showVer;
+          if (typeof d.clearSpawners === "boolean") clearSpawners = d.clearSpawners;
+        }
+      } catch (_) {}
+      refreshBar(); // apply (fps/ver pills, trash tooltip; an open options panel re-renders from these on its next refresh)
+      return;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
 }
 function forgetSavedField() { // restart path: the wiped field must persist as wiped
   try {
@@ -5794,13 +6277,13 @@ async function restoreField() {
           if (fieldSig() !== bootSig) lastSavedSig = ""; // dirty since boot: keep the live field, force the autosave to persist it on the next tick (leaving lastSavedSig at the boot value would ALSO trigger a save — but "" matches the setFieldSize pattern and can never equal a real sig)
           else {
           if (d.size && FIELD_SCALES[d.size]) fieldSize = d.size; // restore the saved field size first: resize() scales to it
-          trees.length = 0; floors.length = 0; floorCuts.length = 0; spawners.length = 0;
+          trees.length = 0; floors.length = 0; floorCuts.length = 0; rubble.length = 0; spawners.length = 0;
           for (const s of (d.trees || [])) {
             if (!s || !isFinite(+s.x) || !isFinite(+s.y)) continue;
             let sq = +s.seq;
             if (!isFinite(sq)) sq = treeSeq++;
             if (sq >= treeSeq) treeSeq = sq + 1;
-            if (s.barr) trees.push({ kind: "barr", x: +s.x, y: +s.y, r: BARR_HALF, dir: s.dir | 0, seq: sq, hp: +s.hp || BARR_HP, maxHp: +s.maxHp || BARR_HP });
+            if (s.barr) trees.push({ kind: "barr", wood: s.wood ? true : undefined, x: +s.x, y: +s.y, r: BARR_HALF, dir: s.dir | 0, seq: sq, hp: +s.hp || (s.wood ? WOOD_HP : BARR_HP), maxHp: +s.maxHp || (s.wood ? WOOD_HP : BARR_HP) });
             // old saves may still carry bark scars/chip — battle wear never
             // reloads (see snapshotField), so heal it here and load clean
             else trees.push({ x: +s.x, y: +s.y, r: TREE_R, seed: +s.seed || 0, chip: 0, scars: [], seq: sq, hp: +s.hp || TREE_HP, maxHp: +s.maxHp || TREE_HP, qi: (s.qi >= 0 && s.qi < 25) ? s.qi : 12 });
@@ -5814,6 +6297,10 @@ async function restoreField() {
             if (!f || !isFinite(+f.x) || !isFinite(+f.y) || !(+f.r > 0)) continue;
             if (!FLOOR_DEFS[f.kind]) continue; // unknown kinds never carve
             floorCuts.push({ x: +f.x, y: +f.y, r: +f.r, kind: f.kind });
+          }
+          for (const r of (d.rubble || [])) { // felled-wood heaps never despawn, so they reload like terrain
+            if (!r || !isFinite(+r.x) || !isFinite(+r.y)) continue;
+            rubble.push({ x: +r.x, y: +r.y, dir: r.dir | 0 });
           }
           for (const s of (d.spawners || [])) {
             if (!s || !UNIT_DEFS[s.kind] || !isFinite(+s.x) || !isFinite(+s.y)) continue;
@@ -5895,7 +6382,7 @@ if (!window.__keyBound2) {
 function demo() {
   // kept for console testing (spawn a quick two-army setup); the live
   // battlefield itself always starts empty — see clearField().
-  units = []; trees = []; floors = []; floorCuts = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
+  units = []; trees = []; floors = []; floorCuts = []; rubble = []; wrecks = []; spawners = []; selSp = null; hideSpanel(); hideSppre(); barkBits = []; leafBits = []; concBits = []; woodBits = []; bullets = []; parts = []; corpses = []; helmets = []; holes = []; dying = [];
   bumpTrees(); bumpFloors(); clearFloorLayer();
   everMulti = false; totalKills = 0; winner = null;
   const rows = (f, x0, kinds) => {
@@ -5922,6 +6409,7 @@ refreshBar();
 loop._g = ++gen;
 requestAnimationFrame(loop);
 restoreField(); // load the autosaved field (terrain + spawners, never units), if any
+restoreOptions(); // load the saved option toggles, if any (same store, own key)
 // Self-healing heartbeat: if frames stop (throttled/wedged host), restart the
 // loop and re-grab the canvas. Stale loop instances exit via the gen guard.
 setInterval(() => {
@@ -5942,7 +6430,7 @@ setInterval(() => {
     }
   } else { stallCount = 0; lastTickSeen = t; }
 }, 500);
-window.battleSim = { spawn, plantTree, plantBarr, plantFloor, placeSpawner, chipTree, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, floors: () => floors, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bgTiles: grassTiles.length, hole: holes.length, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); }, noteAttack, factionAlert: () => factionAlert, inWaterAt, inDeepWaterAt, splashAt, floorGridGet, floorBoostAt };
+window.battleSim = { spawn, plantTree, plantBarr, plantFloor, placeSpawner, chipTree, step, pendingBarr: () => pendingBarrDir, units: () => units, trees: () => trees, floors: () => floors, spawners: () => spawners, pending: () => pendingSp, bark: () => barkBits.length, leaves: () => leafBits.length, conc: () => concBits.length, wood: () => woodBits.length, rubble: () => rubble.length, wrecks: () => wrecks.length, flakes: () => parts.filter(p => p.flake).length, bullets: () => bullets, shotStats: () => ({ fired: shotsFired, hits: fleshHits }), trails: () => parts.filter(p => p.trail).map(p => ({ x: p.x, y: p.y, ang: p.ang, len: p.len, life: p.life })), triggerRolls, startRoll, pickRollDir, setBarrDir: d => { pendingBarrDir = (d | 0) % 8; }, UNIT_DEFS, holes: () => holes.length, debris: () => helmets.length, corpses: () => corpses.length, dbg: () => ({ W, H, FW, FH, camX: cam.x, camY: cam.y, zoom, DPR, bgTiles: grassTiles.length, hole: holes.length, n: units.length, c: corpses.length, playing }), setMode: m => { mode = m; refreshBar(); }, noteAttack, factionAlert: () => factionAlert, inWaterAt, inDeepWaterAt, splashAt, floorGridGet, floorBoostAt };
 
 </script>
 </body>
